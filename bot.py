@@ -133,7 +133,7 @@ def buy_menu(message: Message):
 
 @bot.message_handler(func=lambda message: message.text == "🆘 Помощь")
 def help_menu(message: Message):
-    bot.reply_to(message, "Отправь фото и выбери стиль. Или нажми '🎨 Генерация фото'.")
+    bot.reply_to(message, "Отправь фото и выбери стиль. Или просто напиши, что хочешь нарисовать.")
 
 @bot.message_handler(func=lambda message: message.text == "🎁 Промокод")
 def promo_button(message: Message):
@@ -155,14 +155,29 @@ def process_user_promo(message: Message):
     except: pass
 
 @bot.message_handler(func=lambda message: message.text == "🎨 Генерация фото")
-def start_generation(message: Message):
+def start_generation_prompt(message: Message):
     user_id = message.from_user.id
     if settings.get("maintenance"): return bot.reply_to(message, "🔧 Техработы.")
     data = get_user_data(user_id)
     if not is_subscription_active(user_id) and data["credits"] <= 0:
         return bot.reply_to(message, "Генерации закончились. Купи: /buy")
-    msg = bot.reply_to(message, "Напиши, что нарисовать:", reply_markup=ForceReply())
-    bot.register_next_step_handler(msg, lambda m: process_generation(m.chat.id, user_id, data, get_smart_prompt(m.text), msg.message_id))
+    bot.reply_to(message, "Напиши, что нарисовать:")
+
+# Обработчик текста (для генерации)
+@bot.message_handler(func=lambda message: True, content_types=['text'])
+def handle_text_generation(message: Message):
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    if settings.get("maintenance"): return
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+    
+    user_text = message.text.strip()
+    if len(user_text) < 2: return
+    
+    msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
+    smart_prompt = get_smart_prompt(user_text)
+    process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def handle_buy_button(call):
@@ -234,7 +249,7 @@ def handle_admin_buttons(call: CallbackQuery):
         total = len(user_data)
         total_gen = sum(d.get("total_generated", 0) for d in user_data.values())
         total_cred = sum(d.get("credits", 0) for d in user_data.values())
-        bot.send_message(call.message.chat.id, f"📊 Всего: {total}\nКартинок: {total_gen}\nКредитов на балансах: {total_cred}")
+        bot.send_message(call.message.chat.id, f"📊 Всего: {total}\nКартинок: {total_gen}\nКредитов: {total_cred}")
     elif call.data == "adm_broadcast":
         msg = bot.send_message(call.message.chat.id, "Текст для рассылки:", reply_markup=ForceReply())
         bot.register_next_step_handler(msg, process_broadcast)
