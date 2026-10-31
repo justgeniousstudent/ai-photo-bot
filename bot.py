@@ -7,6 +7,7 @@ import requests
 import time
 import random
 import base64
+import uuid
 from flask import Flask
 import telebot
 from telebot.types import (
@@ -381,7 +382,7 @@ def handle_style(call):
         return bot.send_message(call.message.chat.id, "Ошибка: фото не найдено.")
     process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
 
-# --- КАСКАД: CLOUDFLARE -> TOGETHER -> POLLINATIONS ---
+# --- КАСКАД: CLOUDFLARE -> TOGETHER -> POLLINATIONS -> VEIDA ---
 def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=False):
     bot.edit_message_text("⏳ Рисую... (Пробую Cloudflare)", chat_id, message_id)
     image_bytes = None
@@ -399,7 +400,7 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
     except Exception as e:
         print(f"CF Error: {e}")
 
-    # --- 2. TOGETHER AI (БЕСПЛАТНЫЙ FLUX SCHNELL, БЕЗ КЛЮЧА) ---
+    # --- 2. TOGETHER AI ---
     if image_bytes is None:
         bot.edit_message_text("⏳ Cloudflare занят. Пробую Together...", chat_id, message_id)
         try:
@@ -425,7 +426,7 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
         except Exception as e:
             print(f"Together Error: {e}")
 
-    # --- 3. POLLINATIONS (АНОНИМНЫЙ) ---
+    # --- 3. POLLINATIONS ---
     if image_bytes is None:
         bot.edit_message_text("⏳ Together занят. Пробую Pollinations...", chat_id, message_id)
         try:
@@ -436,6 +437,49 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
                 image_bytes = img_resp.content
         except Exception as e:
             print(f"Pollinations Error: {e}")
+
+    # --- 4. VEIDA ---
+    if image_bytes is None:
+        bot.edit_message_text("⏳ Pollinations занят. Пробую Veida...", chat_id, message_id)
+        try:
+            anon_id = f"skill-{uuid.uuid4().hex[:10]}"
+            veida_url = "https://veida.ai/api/ai/generate"
+            veida_headers = {
+                "content-type": "application/json",
+                "x-anon-id": anon_id
+            }
+            veida_payload = {
+                "provider": "replicate",
+                "mediaType": "image",
+                "model": "veida-image-v1",
+                "scene": "text-to-image",
+                "prompt": prompt,
+                "options": {"aspect_ratio": "1:1"}
+            }
+            v_resp = requests.post(veida_url, headers=veida_headers, json=veida_payload, timeout=30)
+            if v_resp.status_code == 200:
+                v_data = v_resp.json()
+                if v_data.get("code") == 0 and "data" in v_data and "id" in v_data["data"]:
+                    task_id = v_data["data"]["id"]
+                    for _ in range(10):
+                        time.sleep(8)
+                        poll_url = f"https://veida.ai/api/ai/anon-query?taskId={task_id}&provider=replicate&mediaType=image"
+                        poll_resp = requests.get(poll_url, timeout=15)
+                        if poll_resp.status_code == 200:
+                            poll_data = poll_resp.json()
+                            if poll_data.get("code") == 0 and "data" in poll_data:
+                                status = poll_data["data"].get("status")
+                                if status == "success":
+                                    img_url = poll_data["data"].get("images", [None])[0]
+                                    if img_url:
+                                        img_resp = requests.get(img_url, timeout=30)
+                                        if img_resp.status_code == 200:
+                                            image_bytes = img_resp.content
+                                    break
+                                elif status == "failed":
+                                    break
+        except Exception as e:
+            print(f"Veida Error: {e}")
 
     # --- ОТПРАВКА ---
     if image_bytes:
@@ -451,7 +495,7 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
     else:
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔄 Попробовать снова", callback_data=f"retry_{user_id}"))
-        bot.edit_message_text("❌ Все три сервера заняты. Попробуй позже.", chat_id, message_id, reply_markup=markup)
+        bot.edit_message_text("❌ Все четыре сервера заняты. Попробуй позже.", chat_id, message_id, reply_markup=markup)
 
 # --- ПОВТОР ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('retry_'))
