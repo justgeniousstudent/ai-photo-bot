@@ -7,7 +7,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, LabeledPrice
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9060154141:AAGDGDAwAs1J-HdUyJKyhxfFUfRidrTOjek"
+BOT_TOKEN = "9060154141:AAGaHJBO3kdos4fPzxxrfaI2eyYXwrvhD1s"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
