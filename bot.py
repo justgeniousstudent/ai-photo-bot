@@ -31,7 +31,7 @@ DB_FILE = "users.json"
 SETTINGS_FILE = "settings.json"
 user_data = {}
 promo_codes = {}
-settings = {"welcome_text": "Привет! Отправь фото или нажми '🎨 Генерация фото'.", "price_20": 100, "price_sub": 150, "free_tries": 1, "maintenance": False, "ref_bonus": 5}
+settings = {"welcome_text": "Привет! Отправь фото или нажми '🎨 Генерация фото'.", "price_20": 100, "price_sub": 150, "free_tries": 1, "maintenance": False}
 last_prompt = {}
 admin_logs = []
 
@@ -64,7 +64,7 @@ def log_admin(action, admin_id):
 def get_user_data(user_id, username=None):
     user_id_str = str(user_id)
     if user_id_str not in user_data:
-        user_data[user_id_str] = {"credits": settings.get("free_tries", 1), "subscription_end": None, "username": username, "total_generated": 0, "ref_by": None}
+        user_data[user_id_str] = {"credits": settings.get("free_tries", 1), "subscription_end": None, "username": username, "total_generated": 0}
         save_db()
     elif username and user_data[user_id_str].get("username") != username:
         user_data[user_id_str]["username"] = username
@@ -163,9 +163,12 @@ def start_generation_prompt(message: Message):
         return bot.reply_to(message, "Генерации закончились. Купи: /buy")
     bot.reply_to(message, "Напиши, что нарисовать:")
 
-# Обработчик текста (для генерации)
+# Обработчик текста (с защитой от команд)
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def handle_text_generation(message: Message):
+    if message.text.startswith('/'):
+        return  # Игнорируем команды, чтобы они обрабатывались выше
+    
     user_id = message.from_user.id
     data = get_user_data(user_id)
     if settings.get("maintenance"): return
@@ -436,7 +439,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
     bot.edit_message_text("⏳ Рисую... (Пробую Cloudflare)", chat_id, message_id)
     image_bytes = None
     
-    # 1. CLOUDFLARE
     try:
         cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
         cf_headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
@@ -447,7 +449,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
                 image_bytes = base64.b64decode(result["result"]["image"])
     except Exception as e: print(f"CF Error: {e}")
 
-    # 2. TOGETHER
     if image_bytes is None:
         bot.edit_message_text("⏳ Cloudflare занят. Пробую Together...", chat_id, message_id)
         try:
@@ -462,7 +463,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
                         if img_resp.status_code == 200: image_bytes = img_resp.content
         except Exception as e: print(f"Together Error: {e}")
 
-    # 3. POLLINATIONS
     if image_bytes is None:
         bot.edit_message_text("⏳ Together занят. Пробую Pollinations...", chat_id, message_id)
         try:
@@ -472,7 +472,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
                 image_bytes = img_resp.content
         except Exception as e: print(f"Pollinations Error: {e}")
 
-    # 4. VEIDA
     if image_bytes is None:
         bot.edit_message_text("⏳ Pollinations занят. Пробую Veida...", chat_id, message_id)
         try:
@@ -499,7 +498,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
                                 elif status == "failed": break
         except Exception as e: print(f"Veida Error: {e}")
 
-    # 5. SUBNP
     if image_bytes is None:
         bot.edit_message_text("⏳ Veida занят. Пробую SubNP...", chat_id, message_id)
         try:
@@ -513,7 +511,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
                     image_bytes = base64.b64decode(sub_data["image"])
         except Exception as e: print(f"SubNP Error: {e}")
 
-    # ОТПРАВКА
     if image_bytes:
         bot.send_photo(chat_id=chat_id, photo=image_bytes, caption="✅ Готово!")
         data["total_generated"] = data.get("total_generated", 0) + 1
