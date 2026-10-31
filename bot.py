@@ -190,7 +190,7 @@ def process_user_promo(message: Message):
             bot.reply_to(message, "❌ Неверный код.")
     except: pass
 
-# --- СМЕШНАЯ ФУНКЦИЯ (БОНУС 100) ---
+# --- БОНУС 100 ---
 @bot.message_handler(func=lambda message: message.text == "🎁 100 Бонусных Запросов")
 def trap_bonus(message: Message):
     caption = (
@@ -242,10 +242,9 @@ def start_generation_prompt(message: Message):
         return bot.reply_to(message, "Генерации закончились. Купи: /buy")
     bot.reply_to(message, "Напиши, что нарисовать:")
 
-# --- ОБРАБОТЧИК ТЕКСТА (ЧАТ И ГЕНЕРАЦИЯ) ---
+# --- ОБРАБОТЧИК ТЕКСТА (С ЗАЩИТОЙ ОТ КНОПОК) ---
 @bot.message_handler(func=lambda message: not message.text.startswith('/') and message.content_type == 'text')
 def handle_text(message: Message):
-    # ЖЕСТКАЯ ЗАЩИТА: если текст совпадает с кнопками, не отправляем в ИИ
     if message.text in ["👤 Профиль", "💳 Купить", "🎨 Генерация фото", "💬 ИИ-Чат", "🎁 Промокод", "🎁 100 Бонусных Запросов", "🆘 Помощь"]:
         return
 
@@ -422,9 +421,10 @@ def manage_user(call: CallbackQuery):
     uid = call.data.split("_")[2]
     udata = user_data.get(uid)
     if not udata: return
-    text = f"👤 @{udata.get('username', 'Нет')}\nID: {uid}\nКредиты: {udata.get('credits', 0)}\nЗапросы ИИ: {udata.get('chat_requests', 0)}"
+    text = f"👤 @{udata.get('username', 'Нет')}\nID: {uid}\nКредиты: {udata.get('credits', 0)}\nЗапросы ИИ: {udata.get('chat_requests', 0)}\nБезлимит: {'Да' if is_subscription_active(uid) else 'Нет'}"
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton("➕ 10", callback_data=f"act_cred10_{uid}"), InlineKeyboardButton("➕ 50", callback_data=f"act_cred50_{uid}"))
+    markup.row(InlineKeyboardButton("♾️ Безлимит", callback_data=f"act_sub_{uid}"), InlineKeyboardButton("❌ Снять", callback_data=f"act_unsub_{uid}"))
     markup.row(InlineKeyboardButton("💬 +10 ИИ", callback_data=f"act_chat10_{uid}"), InlineKeyboardButton("💬 +50 ИИ", callback_data=f"act_chat50_{uid}"))
     markup.add(InlineKeyboardButton("🔙 К списку", callback_data="adm_users_0"))
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -436,6 +436,8 @@ def action_user(call: CallbackQuery):
     if uid not in user_data: return
     if action == "cred10": user_data[uid]["credits"] += 10
     elif action == "cred50": user_data[uid]["credits"] += 50
+    elif action == "sub": user_data[uid]["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
+    elif action == "unsub": user_data[uid]["subscription_end"] = None
     elif action == "chat10": user_data[uid]["chat_requests"] = user_data[uid].get("chat_requests", 0) + 10
     elif action == "chat50": user_data[uid]["chat_requests"] = user_data[uid].get("chat_requests", 0) + 50
     save_db()
