@@ -105,23 +105,25 @@ def get_smart_prompt(user_request):
     except: pass
     return user_request
 
+# --- ФУНКЦИЯ ИИ-ЧАТА С БИБЛИОТЕКОЙ LLMF ---
 def get_ai_chat_response(user_text):
+    try:
+        import llmf
+        # Библиотека сама находит рабочий сервер
+        response = llmf.chat(user_text, timeout=30)
+        if response and response.text:
+            return response.text.strip()
+    except Exception as e:
+        print(f"Ошибка llmf: {e}")
+    
+    # Резервный вариант, если llmf не сработал
     try:
         url = "https://text.pollinations.ai/" + urllib.parse.quote(user_text)
         response = requests.get(url, timeout=20)
         if response.status_code == 200 and len(response.text.strip()) > 5:
             return response.text.strip()
     except: pass
-    try:
-        url = "https://api.airforce/v1/chat/completions"
-        headers = {"Content-Type": "application/json"}
-        payload = {"model": "llama-3.1-70b-chat", "messages": [{"role": "user", "content": user_text}], "max_tokens": 500}
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                return data["choices"][0]["message"]["content"].strip()
-    except: pass
+    
     return "❌ ИИ временно недоступен. Попробуй позже."
 
 @app.route('/')
@@ -256,7 +258,6 @@ def handle_text(message: Message):
     
     is_sub = is_subscription_active(user_id)
     
-    # Если есть безлимит или запросы к чату — отвечаем как ИИ-чат
     if is_sub or data.get("chat_requests", 0) > 0:
         bot.send_chat_action(message.chat.id, 'typing')
         answer = get_ai_chat_response(user_text)
@@ -266,14 +267,12 @@ def handle_text(message: Message):
         bot.reply_to(message, f"{answer}\n\n(Осталось запросов: {data['chat_requests'] if not is_sub else '∞'})")
         return
     
-    # Если нет запросов к чату, но есть кредиты на картинки
     if not is_sub and data["credits"] > 0:
         msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
         smart_prompt = get_smart_prompt(user_text)
         process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
         return
 
-    # Если вообще ничего нет
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("💬 Купить запросы к ИИ", callback_data="buy_chat"))
     markup.add(InlineKeyboardButton("🎨 Купить генерации", callback_data="buy_pack"))
