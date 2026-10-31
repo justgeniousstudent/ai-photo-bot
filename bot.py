@@ -113,9 +113,14 @@ def handle_photo(message: Message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
 def handle_style(call):
     user_id = call.from_user.id
-    data = get_user_data(user_id)
+    # Принудительно создаем/получаем данные
+    if user_id not in user_data:
+        user_data[user_id] = {"credits": 1, "subscription_end": None}
     
-    if not is_subscription_active(user_id) and data["credits"] <= 0:
+    data = user_data[user_id]
+    
+    # Проверка на всякий случай
+    if data.get("credits", 0) <= 0 and not is_subscription_active(user_id):
         bot.answer_callback_query(call.id, "Нет генераций! Купи пакет: /buy")
         return
 
@@ -134,9 +139,3 @@ def handle_style(call):
         bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
     else:
         bot.send_message(user_id, "У тебя активен безлимит по подписке ♾️")
-
-# --- ЗАПУСК ---
-if __name__ == '__main__':
-    threading.Thread(target=run_bot).start()
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
