@@ -17,7 +17,7 @@ from telebot.types import (
 )
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9060154141:AAGrMlc_J7nAi6A-7ptLWq-Rstr0u1oTtrY"
+BOT_TOKEN = "9060154141:AAG8cxlh63N1dWZW2KnOKXRfAEoB9zNX8ws"
 ADMIN_ID = 8068216414
 ADMIN_USERNAME = "sladkooe_vino"
 
