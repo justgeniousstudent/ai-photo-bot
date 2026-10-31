@@ -7,7 +7,10 @@ import requests
 import time
 from flask import Flask
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, LabeledPrice, ForceReply
+from telebot.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton, Message, 
+    LabeledPrice, ForceReply, ReplyKeyboardMarkup, KeyboardButton
+)
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "9060154141:AAF_Wa3bzK5EVFJxkT3LA_OU2cxsm5uu_YY"
@@ -48,7 +51,7 @@ load_db()
 def get_user_data(user_id, username=None):
     user_id_str = str(user_id)
     if user_id_str not in user_data:
-        user_data[user_id_str] = {"credits": 1, "subscription_end": None, "username": username}
+        user_data[user_id_str] = {"credits": 1, "subscription_end": None, "username": username, "banned": False}
         save_db()
     elif username and user_data[user_id_str].get("username") != username:
         user_data[user_id_str]["username"] = username
@@ -69,6 +72,9 @@ def is_admin(user_id, username=None):
         return True
     return False
 
+def is_banned(user_id):
+    return get_user_data(user_id).get("banned", False)
+
 # --- УМНЫЙ ПРОМПТ ---
 def get_smart_prompt(user_request):
     try:
@@ -88,37 +94,82 @@ def run_bot():
     print("Бот запущен...")
     bot.infinity_polling()
 
+# --- КЛАВИАТУРА ---
+def get_main_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(KeyboardButton("👤 Профиль"), KeyboardButton("💳 Купить"))
+    markup.add(KeyboardButton("🆘 Помощь"))
+    return markup
+
 # --- КОМАНДЫ ---
 @bot.message_handler(commands=['start'])
 def start(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username
+    
+    if is_banned(user_id):
+        return bot.reply_to(message, "🚫 Вы забанены в этом боте.")
+        
     get_user_data(user_id, username)
     
     if is_admin(user_id, username):
-        bot.reply_to(message, "👑 Привет, Админ! Твои команды:\n/stats - статистика\n/give <ID или @username> <кол-во> - выдать кредиты")
+        bot.reply_to(
+            message, 
+            "👑 Привет, Админ! Твои команды:\n"
+            "/stats - статистика\n"
+            "/give <ID или @username> <кол-во> - выдать кредиты\n"
+            "/setlimit <ID или @username> <дней> - выдать безлимит\n"
+            "/broadcast <текст> - рассылка всем\n"
+            "/ban <ID или @username> - забанить\n"
+            "/unban <ID или @username> - разбанить",
+            reply_markup=get_main_keyboard()
+        )
         return
     
     data = get_user_data(user_id)
     if data["credits"] == 1 and not is_subscription_active(user_id):
-        bot.reply_to(message, "Привет! Отправь мне фото, и я сделаю из него конфетку. У тебя есть 1 бесплатная попытка!")
+        bot.reply_to(message, "Привет! Отправь мне фото, и я сделаю из него конфетку. У тебя есть 1 бесплатная попытка!", reply_markup=get_main_keyboard())
     else:
-        bot.reply_to(message, "Привет! Отправь мне фото для обработки.")
+        bot.reply_to(message, "Привет! Отправь мне фото для обработки.", reply_markup=get_main_keyboard())
 
-@bot.message_handler(commands=['buy'])
-def buy(message: Message):
+# --- ОБРАБОТКА КНОПОК КЛАВИАТУРЫ ---
+@bot.message_handler(func=lambda message: message.text == "👤 Профиль")
+def profile(message: Message):
+    if is_banned(message.from_user.id): return
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    sub_status = "Активен" if is_subscription_active(user_id) else "Нет"
+    bot.reply_to(message, f"👤 Твой профиль:\nID: {user_id}\nГенераций: {data['credits']}\nБезлимит: {sub_status}")
+
+@bot.message_handler(func=lambda message: message.text == "💳 Купить")
+def buy_menu(message: Message):
+    if is_banned(message.from_user.id): return
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🎫 20 генераций (100 ⭐)", callback_data="buy_pack"))
     markup.add(InlineKeyboardButton("♾️ Безлимит на месяц (150 ⭐)", callback_data="buy_sub"))
     bot.reply_to(message, "Выбери подходящий тариф:", reply_markup=markup)
 
-# --- АДМИНКА ---
+@bot.message_handler(func=lambda message: message.text == "🆘 Помощь")
+def help_menu(message: Message):
+    if is_banned(message.from_user.id): return
+    bot.reply_to(message, "Отправь мне фото, выбери стиль, и я сгенерирую новое изображение. Оплатить генерации можно через кнопку 'Купить'.")
+
+@bot.message_handler(commands=['buy'])
+def buy(message: Message):
+    if is_banned(message.from_user.id): return
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🎫 20 генераций (100 ⭐)", callback_data="buy_pack"))
+    markup.add(InlineKeyboardButton("♾️ Безлимит на месяц (150 ⭐)", callback_data="buy_sub"))
+    bot.reply_to(message, "Выбери подходящий тариф:", reply_markup=markup)
+
+# --- АДМИНКА (ПРИКОЛЮХИ) ---
 @bot.message_handler(commands=['stats'])
 def stats(message: Message):
     if not is_admin(message.from_user.id, message.from_user.username): return
     total_users = len(user_data)
+    banned_users = sum(1 for d in user_data.values() if d.get("banned"))
     total_credits = sum(d.get("credits", 0) for d in user_data.values())
-    bot.reply_to(message, f"📊 Статистика:\nПользователей: {total_users}\nГенераций на балансах: {total_credits}")
+    bot.reply_to(message, f"📊 Статистика:\nВсего: {total_users}\nЗабанено: {banned_users}\nГенераций на балансах: {total_credits}")
 
 @bot.message_handler(commands=['give'])
 def give_credits(message: Message):
@@ -127,23 +178,79 @@ def give_credits(message: Message):
         parts = message.text.split()
         if len(parts) != 3: return bot.reply_to(message, "Использование: /give <ID или @username> <кол-во>")
         target, amount = parts[1], int(parts[2])
-        target_id = None
+        target_id = find_user_id(target)
+        if not target_id: return bot.reply_to(message, "Пользователь не найден.")
         
-        if target.isdigit(): target_id = target
-        elif target.startswith('@'):
-            username = target[1:].lower()
-            for uid, udata in user_data.items():
-                if udata.get("username") and udata.get("username").lower() == username:
-                    target_id = uid; break
-            if not target_id: return bot.reply_to(message, "Пользователь не найден в базе.")
-        
-        if target_id not in user_data: user_data[target_id] = {"credits": 0, "subscription_end": None, "username": None}
         user_data[target_id]["credits"] += amount
         save_db()
         bot.reply_to(message, f"✅ {target} выдано {amount} генераций.")
         try: bot.send_message(target_id, f"🎁 Тебе начислено {amount} генераций!")
         except: pass
     except Exception as e: bot.reply_to(message, f"Ошибка: {e}")
+
+@bot.message_handler(commands=['setlimit'])
+def set_limit(message: Message):
+    if not is_admin(message.from_user.id, message.from_user.username): return
+    try:
+        parts = message.text.split()
+        if len(parts) != 3: return bot.reply_to(message, "Использование: /setlimit <ID или @username> <дней>")
+        target, days = parts[1], int(parts[2])
+        target_id = find_user_id(target)
+        if not target_id: return bot.reply_to(message, "Пользователь не найден.")
+        
+        user_data[target_id]["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
+        save_db()
+        bot.reply_to(message, f"✅ {target} выдан безлимит на {days} дней.")
+        try: bot.send_message(target_id, f"♾️ Тебе выдан безлимит на {days} дней!")
+        except: pass
+    except Exception as e: bot.reply_to(message, f"Ошибка: {e}")
+
+@bot.message_handler(commands=['ban'])
+def ban_user(message: Message):
+    if not is_admin(message.from_user.id, message.from_user.username): return
+    parts = message.text.split()
+    if len(parts) != 2: return bot.reply_to(message, "Использование: /ban <ID или @username>")
+    target_id = find_user_id(parts[1])
+    if not target_id: return bot.reply_to(message, "Пользователь не найден.")
+    user_data[target_id]["banned"] = True
+    save_db()
+    bot.reply_to(message, f"🚫 Пользователь {parts[1]} забанен.")
+
+@bot.message_handler(commands=['unban'])
+def unban_user(message: Message):
+    if not is_admin(message.from_user.id, message.from_user.username): return
+    parts = message.text.split()
+    if len(parts) != 2: return bot.reply_to(message, "Использование: /unban <ID или @username>")
+    target_id = find_user_id(parts[1])
+    if not target_id: return bot.reply_to(message, "Пользователь не найден.")
+    user_data[target_id]["banned"] = False
+    save_db()
+    bot.reply_to(message, f"✅ Пользователь {parts[1]} разбанен.")
+
+@bot.message_handler(commands=['broadcast'])
+def broadcast(message: Message):
+    if not is_admin(message.from_user.id, message.from_user.username): return
+    text = message.text.replace("/broadcast ", "")
+    if not text: return bot.reply_to(message, "Введите текст для рассылки.")
+    
+    count = 0
+    for uid in user_data.keys():
+        try:
+            bot.send_message(uid, f"📢 Сообщение от админа:\n\n{text}")
+            count += 1
+            time.sleep(0.05) # Пауза, чтобы не получить бан от Telegram
+        except: pass
+    bot.reply_to(message, f"✅ Рассылка отправлена {count} пользователям.")
+
+# Вспомогательная функция поиска ID
+def find_user_id(target):
+    if target.isdigit(): return target
+    elif target.startswith('@'):
+        username = target[1:].lower()
+        for uid, udata in user_data.items():
+            if udata.get("username") and udata.get("username").lower() == username:
+                return uid
+    return None
 
 # --- ОПЛАТА ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
@@ -174,10 +281,13 @@ def got_payment(message: Message):
 def handle_photo(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username
+    
+    if is_banned(user_id): return
+    
     data = get_user_data(user_id, username)
     
     if not is_subscription_active(user_id) and data["credits"] <= 0:
-        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy", reply_markup=get_main_keyboard())
 
     photo_storage[user_id] = message.photo[-1].file_id 
     waiting_for_prompt.pop(user_id, None)
@@ -188,10 +298,13 @@ def handle_photo(message: Message):
     markup.add(InlineKeyboardButton("✍️ Свой запрос (ИИ)", callback_data="style_custom"))
     bot.reply_to(message, "Выбери стиль или напиши свой запрос:", reply_markup=markup)
 
-# --- ОБРАБОТКА КНОПОК ---
+# --- ОБРАБОТКА КНОПОК СТИЛЯ ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
 def handle_style(call):
     user_id = call.from_user.id
+    
+    if is_banned(user_id): return
+    
     data = get_user_data(user_id)
     
     if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
@@ -212,9 +325,9 @@ def handle_style(call):
 @bot.message_handler(func=lambda message: message.from_user.id in waiting_for_prompt)
 def handle_custom_text(message: Message):
     user_id = message.from_user.id
+    if is_banned(user_id): return
     data = get_user_data(user_id)
     user_text = message.text
-    
     waiting_for_prompt.pop(user_id, None)
     
     if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
@@ -233,32 +346,24 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
     
     bot.edit_message_text("⏳ Нейросеть рисует... (попытка 1)", chat_id, message_id)
     
-    for attempt in range(3): # 3 попытки
+    for attempt in range(3):
         try:
             response = requests.get(image_url, timeout=45)
-            
             if response.status_code == 200:
-                bot.send_photo(
-                    chat_id=chat_id,
-                    photo=response.content,
-                    caption=f"✅ Готово! (Запрос: {prompt[:50]}...)"
-                )
-                
+                bot.send_photo(chat_id=chat_id, photo=response.content, caption=f"✅ Готово! (Запрос: {prompt[:50]}...)")
                 if not is_subscription_active(user_id):
                     data["credits"] -= 1
                     save_db()
-                    bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
+                    bot.send_message(user_id, f"Осталось генераций: {data['credits']}", reply_markup=get_main_keyboard())
                 else:
-                    bot.send_message(user_id, "У тебя активен безлимит ♾️")
-                return # Успех
-            
+                    bot.send_message(user_id, "У тебя активен безлимит ♾️", reply_markup=get_main_keyboard())
+                return
             else:
                 if attempt < 2:
                     bot.edit_message_text(f"⏳ Сервер перегружен. Пробую еще раз... (попытка {attempt+2})", chat_id, message_id)
-                    time.sleep(4) # Ждем 4 секунды перед повтором
+                    time.sleep(4)
                 else:
                     bot.edit_message_text("❌ Нейросеть перегружена. Попробуй позже.", chat_id, message_id)
-                    
         except Exception as e:
             print(f"Ошибка генерации (попытка {attempt+1}): {e}")
             if attempt < 2:
