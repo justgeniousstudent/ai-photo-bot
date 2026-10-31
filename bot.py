@@ -227,11 +227,11 @@ def trap_bonus(message: Message):
 def start_chat(message: Message):
     user_id = message.from_user.id
     data = get_user_data(user_id)
-    if data.get("chat_requests", 0) <= 0:
+    if not is_subscription_active(user_id) and data.get("chat_requests", 0) <= 0:
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton(f"🎫 100 запросов ({settings['price_chat']} ⭐)", callback_data="buy_chat"))
-        return bot.reply_to(message, "У тебя закончились запросы к ИИ. Купи пакет:", reply_markup=markup)
-    bot.reply_to(message, f"💬 Режим чата активирован. Осталось запросов: {data['chat_requests']}. Просто напиши свой вопрос.")
+        return bot.reply_to(message, "У тебя закончились запросы к ИИ. Купи пакет или активируй безлимит:", reply_markup=markup)
+    bot.reply_to(message, f"💬 Режим чата активирован. Осталось запросов: {data['chat_requests'] if not is_subscription_active(user_id) else '∞'}. Просто напиши свой вопрос.")
 
 @bot.message_handler(func=lambda message: message.text == "🎨 Генерация фото")
 def start_generation_prompt(message: Message):
@@ -242,7 +242,7 @@ def start_generation_prompt(message: Message):
         return bot.reply_to(message, "Генерации закончились. Купи: /buy")
     bot.reply_to(message, "Напиши, что нарисовать:")
 
-# --- ОБРАБОТЧИК ТЕКСТА (С ЗАЩИТОЙ ОТ КНОПОК) ---
+# --- ОБРАБОТЧИК ТЕКСТА (ЧАТ И ГЕНЕРАЦИЯ) ---
 @bot.message_handler(func=lambda message: not message.text.startswith('/') and message.content_type == 'text')
 def handle_text(message: Message):
     if message.text in ["👤 Профиль", "💳 Купить", "🎨 Генерация фото", "💬 ИИ-Чат", "🎁 Промокод", "🎁 100 Бонусных Запросов", "🆘 Помощь"]:
@@ -254,19 +254,30 @@ def handle_text(message: Message):
     user_text = message.text.strip()
     if len(user_text) < 2: return
     
-    if data.get("chat_requests", 0) > 0:
+    is_sub = is_subscription_active(user_id)
+    
+    # Если есть безлимит или запросы к чату — отвечаем как ИИ-чат
+    if is_sub or data.get("chat_requests", 0) > 0:
         bot.send_chat_action(message.chat.id, 'typing')
         answer = get_ai_chat_response(user_text)
-        data["chat_requests"] -= 1
-        save_db()
-        bot.reply_to(message, f"{answer}\n\n(Осталось запросов: {data['chat_requests']})")
+        if not is_sub:
+            data["chat_requests"] -= 1
+            save_db()
+        bot.reply_to(message, f"{answer}\n\n(Осталось запросов: {data['chat_requests'] if not is_sub else '∞'})")
         return
     
-    if not is_subscription_active(user_id) and data["credits"] <= 0:
-        return bot.reply_to(message, "У тебя нет кредитов. Купи: /buy")
-    msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
-    smart_prompt = get_smart_prompt(user_text)
-    process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
+    # Если нет запросов к чату, но есть кредиты на картинки
+    if not is_sub and data["credits"] > 0:
+        msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
+        smart_prompt = get_smart_prompt(user_text)
+        process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
+        return
+
+    # Если вообще ничего нет
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("💬 Купить запросы к ИИ", callback_data="buy_chat"))
+    markup.add(InlineKeyboardButton("🎨 Купить генерации", callback_data="buy_pack"))
+    bot.reply_to(message, "У тебя закончились все лимиты. Купи пакет:", reply_markup=markup)
 
 # --- ОПЛАТА ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
