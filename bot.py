@@ -1,31 +1,59 @@
 import os
+import json
 import threading
 import datetime
+import urllib.parse
+import requests
 from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, LabeledPrice
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "9060154141:AAF_Wa3bzK5EVFJxkT3LA_OU2cxsm5uu_YY"
+ADMIN_ID = 8068216414  # Ваш ID
+
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# База данных (в памяти)
+# --- БАЗА ДАННЫХ В ФАЙЛЕ ---
+DB_FILE = "users.json"
 user_data = {}
-# Временное хранилище для фото (чтобы не терять их при нажатии на кнопку)
 photo_storage = {}
 
-def get_user_data(user_id):
-    if user_id not in user_data:
-        user_data[user_id] = {"credits": 1, "subscription_end": None}
-    return user_data[user_id]
+def load_db():
+    global user_data
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f:
+            user_data = json.load(f)
+    else:
+        user_data = {}
+
+def save_db():
+    with open(DB_FILE, "w") as f:
+        json.dump(user_data, f)
+
+load_db()
+
+def get_user_data(user_id, username=None):
+    user_id_str = str(user_id)
+    if user_id_str not in user_data:
+        user_data[user_id_str] = {"credits": 1, "subscription_end": None, "username": username}
+        save_db()
+    elif username and user_data[user_id_str].get("username") != username:
+        # Обновляем юзернейм, если он изменился
+        user_data[user_id_str]["username"] = username
+        save_db()
+    return user_data[user_id_str]
 
 def is_subscription_active(user_id):
-    data = user_data.get(user_id, {})
+    data = get_user_data(user_id)
     sub_end = data.get("subscription_end")
-    if sub_end and sub_end > datetime.datetime.now():
+    if sub_end and datetime.datetime.fromisoformat(sub_end) > datetime.datetime.now():
         return True
     return False
+
+def is_admin(user_id):
+    return user_id == ADMIN_ID
 
 @app.route('/')
 def health():
@@ -35,11 +63,16 @@ def run_bot():
     print("Бот запущен...")
     bot.infinity_polling()
 
-# --- КОМАНДЫ ---
+# --- ПОЛЬЗОВАТЕЛЬСКИЕ КОМАНДЫ ---
 @bot.message_handler(commands=['start'])
 def start(message: Message):
     user_id = message.from_user.id
-    data = get_user_data(user_id)
+    username = message.from_user.username
+    data = get_user_data(user_id, username)
+    
+    if is_admin(user_id):
+        bot.reply_to(message, "👑 Привет, Админ! Тебе доступны команды:\n/stats - статистика\n/give <ID или @username> <кол-во> - выдать кредиты")
+    
     if data["credits"] == 1 and not is_subscription_active(user_id):
         bot.reply_to(message, "Привет! Отправь мне фото, и я сделаю из него конфетку. У тебя есть 1 бесплатная попытка!")
     else:
@@ -51,6 +84,61 @@ def buy(message: Message):
     markup.add(InlineKeyboardButton("🎫 20 генераций (100 ⭐)", callback_data="buy_pack"))
     markup.add(InlineKeyboardButton("♾️ Безлимит на месяц (150 ⭐)", callback_data="buy_sub"))
     bot.reply_to(message, "Выбери подходящий тариф:", reply_markup=markup)
+
+# --- АДМИНСКИЕ КОМАНДЫ ---
+@bot.message_handler(commands=['stats'])
+def stats(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    total_users = len(user_data)
+    total_credits = sum(d.get("credits", 0) for d in user_data.values())
+    bot.reply_to(message, f"📊 Статистика:\nПользователей: {total_users}\nВсего генераций на балансах: {total_credits}")
+
+@bot.message_handler(commands=['give'])
+def give_credits(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        parts = message.text.split()
+        if len(parts) != 3:
+            bot.reply_to(message, "Использование: /give <ID или @username> <кол-во>")
+            return
+        
+        target = parts[1]
+        amount = int(parts[2])
+        
+        target_id = None
+        
+        # Проверяем, ввели ли ID (цифры) или @username
+        if target.isdigit():
+            target_id = target
+        elif target.startswith('@'):
+            username = target[1:] # Убираем @
+            # Ищем пользователя по юзернейму в базе
+            for uid, udata in user_data.items():
+                if udata.get("username") == username:
+                    target_id = uid
+                    break
+            if not target_id:
+                bot.reply_to(message, f"Пользователь {target} не найден в базе (он еще не писал боту).")
+                return
+        else:
+            bot.reply_to(message, "Неверный формат. Введите ID или @username.")
+            return
+
+        if target_id not in user_data:
+            user_data[target_id] = {"credits": 0, "subscription_end": None, "username": None}
+            
+        user_data[target_id]["credits"] += amount
+        save_db()
+        
+        bot.reply_to(message, f"✅ Пользователю {target} выдано {amount} генераций.")
+        try:
+            bot.send_message(target_id, f"🎁 Тебе начислено {amount} генераций от администратора!")
+        except:
+            pass # Если пользователь заблокировал бота, сообщение не дойдет
+    except Exception as e:
+        bot.reply_to(message, f"Ошибка: {e}")
 
 # --- ОПЛАТА ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
@@ -72,31 +160,32 @@ def got_payment(message: Message):
     data = get_user_data(user_id)
     if payload == "pack_20":
         data["credits"] += 20
+        save_db()
         bot.send_message(user_id, "✅ Оплата прошла! Тебе начислено 20 генераций. Отправляй фото!")
     elif payload == "sub_month":
-        data["subscription_end"] = datetime.datetime.now() + datetime.timedelta(days=30)
+        data["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
+        save_db()
         bot.send_message(user_id, "✅ Оплата прошла! У тебя активирован безлимит на 30 дней. Отправляй фото!")
 
 # --- ОБРАБОТКА ФОТО ---
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message: Message):
     user_id = message.from_user.id
-    get_user_data(user_id) 
+    username = message.from_user.username
+    data = get_user_data(user_id, username)
     
-    if not is_subscription_active(user_id) and user_data[user_id]["credits"] <= 0:
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
         bot.reply_to(message, "У тебя закончились генерации или подписка. Купи пакет: /buy")
         return
 
-    # СОХРАНЯЕМ ID ФОТО, ЧТОБЫ ИСПОЛЬЗОВАТЬ ЕГО ПРИ НАЖАТИИ НА КНОПКУ
-    photo_id = message.photo[-1].file_id
-    photo_storage[user_id] = photo_id 
+    photo_storage[user_id] = message.photo[-1].file_id 
 
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("✨ Улучшить качество", callback_data="style_enhance"))
     markup.add(InlineKeyboardButton("🎨 Стиль Аниме", callback_data="style_anime"))
     bot.reply_to(message, "Выбери стиль обработки:", reply_markup=markup)
 
-# --- ОБРАБОТКА КНОПОК СТИЛЯ ---
+# --- ОБРАБОТКА КНОПОК (ГЕНЕРАЦИЯ) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
 def handle_style(call):
     user_id = call.from_user.id
@@ -107,30 +196,43 @@ def handle_style(call):
         return
 
     bot.answer_callback_query(call.id)
-
-    # БЕРЕМ СОХРАНЕННОЕ ФОТО
-    photo_id = photo_storage.get(user_id)
-    if not photo_id:
+    
+    if not photo_storage.get(user_id):
         bot.send_message(call.message.chat.id, "Ошибка: фото не найдено. Отправь фото заново.")
         return
 
-    bot.edit_message_text("⏳ Нейросеть колдует над твоим фото...", call.message.chat.id, call.message.message_id)
+    bot.edit_message_text("⏳ Нейросеть колдует...", call.message.chat.id, call.message.message_id)
 
-    # Заглушка (отправляем сохраненное фото)
-    bot.send_photo(
-        chat_id=call.message.chat.id,
-        photo=photo_id, 
-        caption=f"✅ Готово! (Стиль: {call.data})"
-    )
-    
-    if not is_subscription_active(user_id):
-        data["credits"] -= 1
-        bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
-    else:
-        bot.send_message(user_id, "У тебя активен безлимит по подписке ♾️")
+    try:
+        prompt = "anime style portrait" if call.data == "style_anime" else "high quality, detailed, masterpiece"
+        encoded_prompt = urllib.parse.quote(prompt)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512&nologo=true"
+        
+        response = requests.get(image_url, timeout=30)
+        
+        if response.status_code == 200:
+            bot.send_photo(
+                chat_id=call.message.chat.id,
+                photo=response.content,
+                caption=f"✅ Сгенерировано! (Стиль: {call.data})"
+            )
+            
+            if not is_subscription_active(user_id):
+                data["credits"] -= 1
+                save_db()
+                bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
+            else:
+                bot.send_message(user_id, "У тебя активен безлимит ♾️")
+        else:
+            bot.send_message(call.message.chat.id, "Ошибка: нейросеть не смогла сгенерировать фото.")
+            
+    except Exception as e:
+        print(f"Ошибка генерации: {e}")
+        bot.send_message(call.message.chat.id, "Произошла ошибка при генерации. Попробуй позже.")
 
 # --- ЗАПУСК ---
 if __name__ == '__main__':
     threading.Thread(target=run_bot).start()
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
+    
