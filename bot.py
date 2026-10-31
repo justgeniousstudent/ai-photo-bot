@@ -133,7 +133,7 @@ def get_main_keyboard():
     markup.add(KeyboardButton("🎯 Ежедневный бонус"), KeyboardButton("📊 Статистика"))
     return markup
 
-# --- ПОЛЬЗОВАТЕЛЬСКИЕ 10 ФУНКЦИЙ ---
+# --- ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ---
 @bot.message_handler(commands=['start'])
 def start(message: Message):
     user_id = message.from_user.id
@@ -152,7 +152,6 @@ def profile(message: Message):
     user_id = message.from_user.id
     data = get_user_data(user_id)
     sub_status = "Активен" if is_subscription_active(user_id) else "Нет"
-    reg_date = data.get("reg_date", "Неизвестно")
     bot.reply_to(message, f"👤 Твой профиль:\nID: {user_id}\nГенераций: {data['credits']}\nБезлимит: {sub_status}\nВсего создано: {data.get('total_generated', 0)}")
 
 @bot.message_handler(func=lambda message: message.text == "💳 Купить")
@@ -289,7 +288,7 @@ def handle_style(call):
         return bot.send_message(call.message.chat.id, "Ошибка: фото не найдено.")
     process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
 
-# --- АДМИН-МЕНЮ (30 ФУНКЦИЙ) ---
+# --- АДМИН-МЕНЮ ---
 @bot.message_handler(commands=['admin_menu'])
 def admin_menu(message: Message):
     if not is_admin(message.from_user.id, message.from_user.username): return
@@ -394,7 +393,6 @@ def set_price(message, key):
         bot.reply_to(message, f"✅ Цена обновлена: {settings[key]}")
     except: bot.reply_to(message, "Ошибка. Введи число.")
 
-# Остальные функции (промокоды, бан, управление юзером)
 @bot.callback_query_handler(func=lambda call: call.data == "promo_create")
 def promo_create_prompt(call: CallbackQuery):
     msg = bot.send_message(call.message.chat.id, "Введи: КОД СУММА", reply_markup=ForceReply())
@@ -569,8 +567,3 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
         if not is_subscription_active(user_id):
             data["credits"] -= 1; save_db()
             bot.send_message(user_id, f"Осталось: {data['credits']}", reply_markup=get_main_keyboard())
-        else:
-            save_db()
-            bot.send_message(user_id, "Безлимит ♾️", reply_markup=get_main_keyboard())
-    else:
-        markup = InlineKeyboardMarkup()
