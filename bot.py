@@ -17,7 +17,7 @@ from telebot.types import (
 )
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9060154141:AAGrMlc_J7nAi6A-7ptLWq-Rstr0u1oTtrY"
+BOT_TOKEN = "9060154141:AAG8cxlh63N1dWZW2KnOKXRfAEoB9zNX8ws"
 ADMIN_ID = 8068216414
 ADMIN_USERNAME = "sladkooe_vino"
 CF_ACCOUNT_ID = "34f552476e3fbf85af57f61be594ffc6"
@@ -215,8 +215,7 @@ def handle_generation_text(message: Message):
     smart_prompt = get_smart_prompt(user_text)
     last_prompt[user_id] = smart_prompt
     process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def handle_buy_button(call):
     bot.answer_callback_query(call.id)
     if call.data == "buy_pack":
@@ -561,4 +560,16 @@ def handle_retry(call: CallbackQuery):
     if call.from_user.id != user_id:
         return bot.answer_callback_query(call.id, "Это не твоя кнопка.")
     prompt = last_prompt.get(user_id)
-    if not prompt: return bot.answer_callback
+    if not prompt: return bot.answer_callback_query(call.id, "Нет сохраненного запроса.")
+    data = get_user_data(user_id)
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.answer_callback_query(call.id, "Генерации закончились. Купи: /buy")
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text("⏳ Повторная попытка...", call.message.chat.id, call.message.message_id)
+    process_generation(call.message.chat.id, user_id, data, prompt, call.message.message_id)
+
+# --- ЗАПУСК ---
+if __name__ == '__main__':
+    threading.Thread(target=run_bot).start()
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
