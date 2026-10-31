@@ -12,19 +12,15 @@ app = Flask(__name__)
 
 # База данных (в памяти)
 user_data = {}
+# Временное хранилище для фото (чтобы не терять их при нажатии на кнопку)
+photo_storage = {}
 
 def get_user_data(user_id):
-    """Безопасно возвращает данные пользователя. Создает, если их нет."""
-    if user_id is None:
-        return {"credits": 0, "subscription_end": None}
     if user_id not in user_data:
         user_data[user_id] = {"credits": 1, "subscription_end": None}
     return user_data[user_id]
 
 def is_subscription_active(user_id):
-    """Проверяет, активна ли подписка."""
-    if user_id is None:
-        return False
     data = user_data.get(user_id, {})
     sub_end = data.get("subscription_end")
     if sub_end and sub_end > datetime.datetime.now():
@@ -56,30 +52,14 @@ def buy(message: Message):
     markup.add(InlineKeyboardButton("♾️ Безлимит на месяц (150 ⭐)", callback_data="buy_sub"))
     bot.reply_to(message, "Выбери подходящий тариф:", reply_markup=markup)
 
-# --- ОПЛАТА ЧЕРЕЗ TELEGRAM STARS ---
+# --- ОПЛАТА ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def handle_buy_button(call):
     bot.answer_callback_query(call.id)
     if call.data == "buy_pack":
-        bot.send_invoice(
-            chat_id=call.message.chat.id,
-            title="Пакет 20 генераций",
-            description="Разовая покупка 20 обработок фото.",
-            invoice_payload="pack_20",
-            provider_token="",
-            currency="XTR",
-            prices=[LabeledPrice(label="20 генераций", amount=100)]
-        )
+        bot.send_invoice(chat_id=call.message.chat.id, title="Пакет 20 генераций", description="Разовая покупка 20 обработок фото.", invoice_payload="pack_20", provider_token="", currency="XTR", prices=[LabeledPrice(label="20 генераций", amount=100)])
     elif call.data == "buy_sub":
-        bot.send_invoice(
-            chat_id=call.message.chat.id,
-            title="Безлимит на 1 месяц",
-            description="Неограниченное количество обработок фото в течение 30 дней.",
-            invoice_payload="sub_month",
-            provider_token="",
-            currency="XTR",
-            prices=[LabeledPrice(label="Безлимит на месяц", amount=150)]
-        )
+        bot.send_invoice(chat_id=call.message.chat.id, title="Безлимит на 1 месяц", description="Неограниченное количество обработок фото в течение 30 дней.", invoice_payload="sub_month", provider_token="", currency="XTR", prices=[LabeledPrice(label="Безлимит на месяц", amount=150)])
 
 @bot.pre_checkout_query_handler(func=lambda query: True)
 def checkout(pre_checkout_query):
@@ -90,7 +70,6 @@ def got_payment(message: Message):
     payload = message.successful_payment.invoice_payload
     user_id = message.from_user.id
     data = get_user_data(user_id)
-
     if payload == "pack_20":
         data["credits"] += 20
         bot.send_message(user_id, "✅ Оплата прошла! Тебе начислено 20 генераций. Отправляй фото!")
@@ -108,53 +87,47 @@ def handle_photo(message: Message):
         bot.reply_to(message, "У тебя закончились генерации или подписка. Купи пакет: /buy")
         return
 
+    # СОХРАНЯЕМ ID ФОТО, ЧТОБЫ ИСПОЛЬЗОВАТЬ ЕГО ПРИ НАЖАТИИ НА КНОПКУ
+    photo_id = message.photo[-1].file_id
+    photo_storage[user_id] = photo_id 
+
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("✨ Улучшить качество", callback_data="style_enhance"))
     markup.add(InlineKeyboardButton("🎨 Стиль Аниме", callback_data="style_anime"))
     bot.reply_to(message, "Выбери стиль обработки:", reply_markup=markup)
 
-# --- ОБРАБОТКА КНОПОК СТИЛЯ (ЗАЩИЩЕНО ОТ ОШИБОК) ---
+# --- ОБРАБОТКА КНОПОК СТИЛЯ ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
 def handle_style(call):
-    try:
-        user_id = call.from_user.id
-        
-        # Принудительно создаем данные, если их вдруг нет
-        if user_id not in user_data:
-            user_data[user_id] = {"credits": 1, "subscription_end": None}
-        
-        data = user_data[user_id]
-        
-        if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
-            bot.answer_callback_query(call.id, "Нет генераций! Купи пакет: /buy")
-            return
+    user_id = call.from_user.id
+    data = get_user_data(user_id)
+    
+    if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
+        bot.answer_callback_query(call.id, "Нет генераций! Купи пакет: /buy")
+        return
 
-        bot.answer_callback_query(call.id)
-        
-        # Проверяем, есть ли у нас фото для обработки
-        if not call.message.photo:
-            bot.send_message(call.message.chat.id, "Ошибка: фото не найдено. Отправь фото заново.")
-            return
+    bot.answer_callback_query(call.id)
 
-        bot.edit_message_text("⏳ Нейросеть колдует над твоим фото...", call.message.chat.id, call.message.message_id)
+    # БЕРЕМ СОХРАНЕННОЕ ФОТО
+    photo_id = photo_storage.get(user_id)
+    if not photo_id:
+        bot.send_message(call.message.chat.id, "Ошибка: фото не найдено. Отправь фото заново.")
+        return
 
-        # Заглушка (отправляем то же фото)
-        bot.send_photo(
-            chat_id=call.message.chat.id,
-            photo=call.message.photo[-1].file_id, 
-            caption=f"✅ Готово! (Стиль: {call.data})"
-        )
-        
-        if not is_subscription_active(user_id):
-            data["credits"] -= 1
-            bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
-        else:
-            bot.send_message(user_id, "У тебя активен безлимит по подписке ♾️")
+    bot.edit_message_text("⏳ Нейросеть колдует над твоим фото...", call.message.chat.id, call.message.message_id)
 
-    except Exception as e:
-        # Если что-то пошло не так, бот не упадет, а напишет ошибку
-        print(f"Ошибка в handle_style: {e}")
-        bot.send_message(call.message.chat.id, "Произошла ошибка. Попробуй отправить фото заново.")
+    # Заглушка (отправляем сохраненное фото)
+    bot.send_photo(
+        chat_id=call.message.chat.id,
+        photo=photo_id, 
+        caption=f"✅ Готово! (Стиль: {call.data})"
+    )
+    
+    if not is_subscription_active(user_id):
+        data["credits"] -= 1
+        bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
+    else:
+        bot.send_message(user_id, "У тебя активен безлимит по подписке ♾️")
 
 # --- ЗАПУСК ---
 if __name__ == '__main__':
