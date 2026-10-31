@@ -466,38 +466,48 @@ def handle_style(call):
     process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
 
 def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=False):
-    # Cloudflare Workers AI (FLUX.1 Schnell)
     api_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
     headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
     payload = {"prompt": prompt}
     
     bot.edit_message_text("⏳ Нейросеть (Cloudflare) рисует...", chat_id, message_id)
-    try:
-        response = requests.post(api_url, headers=headers, json=payload, timeout=60)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if "result" in result and "image" in result["result"]:
-                image_bytes = base64.b64decode(result["result"]["image"])
-                bot.send_photo(chat_id=chat_id, photo=image_bytes, caption="✅ Готово!")
-            else:
-                bot.edit_message_text("❌ Не удалось получить картинку от Cloudflare.", chat_id, message_id)
-                return
+    
+    # Делаем 3 попытки
+    for attempt in range(3):
+        try:
+            response = requests.post(api_url, headers=headers, json=payload, timeout=60)
             
-            data["total_generated"] = data.get("total_generated", 0) + 1
-            if not is_subscription_active(user_id):
-                data["credits"] -= 1
-                save_db()
-                bot.send_message(user_id, f"Осталось: {data['credits']}", reply_markup=get_main_keyboard())
+            if response.status_code == 200:
+                result = response.json()
+                if "result" in result and "image" in result["result"]:
+                    image_bytes = base64.b64decode(result["result"]["image"])
+                    bot.send_photo(chat_id=chat_id, photo=image_bytes, caption="✅ Готово!")
+                    
+                    data["total_generated"] = data.get("total_generated", 0) + 1
+                    if not is_subscription_active(user_id):
+                        data["credits"] -= 1
+                        save_db()
+                        bot.send_message(user_id, f"Осталось: {data['credits']}", reply_markup=get_main_keyboard())
+                    else:
+                        save_db()
+                        bot.send_message(user_id, "Безлимит ♾️", reply_markup=get_main_keyboard())
+                    return # Успех
+                else:
+                    print(f"CF Error: нет картинки в ответе. {result}")
+            
+            # Если ошибка (не 200), пробуем еще раз
+            if attempt < 2:
+                bot.edit_message_text(f"⏳ Сервер перегружен. Пробую еще раз... (попытка {attempt+2})", chat_id, message_id)
+                time.sleep(5)
             else:
-                save_db()
-                bot.send_message(user_id, "Безлимит ♾️", reply_markup=get_main_keyboard())
-        else:
-            print(f"CF Error: {response.text}")
-            bot.edit_message_text("❌ Сервер перегружен. Попробуй позже.", chat_id, message_id)
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        bot.edit_message_text("❌ Ошибка при генерации. Попробуй позже.", chat_id, message_id)
+                bot.edit_message_text("❌ Сервер перегружен после 3 попыток. Попробуй позже.", chat_id, message_id)
+                
+        except Exception as e:
+            print(f"Ошибка генерации (попытка {attempt+1}): {e}")
+            if attempt < 2:
+                time.sleep(5)
+            else:
+                bot.edit_message_text("❌ Ошибка при генерации. Попробуй позже.", chat_id, message_id)
 
 # --- ЗАПУСК ---
 if __name__ == '__main__':
