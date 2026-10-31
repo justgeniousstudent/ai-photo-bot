@@ -6,12 +6,12 @@ import urllib.parse
 import requests
 from flask import Flask
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, LabeledPrice
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, LabeledPrice, ForceReply
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "9060154141:AAF_Wa3bzK5EVFJxkT3LA_OU2cxsm5uu_YY"
-ADMIN_ID = 8068216414          # Ваш ID
-ADMIN_USERNAME = "sladkooe_vino" # Ваш юзернейм (без @)
+ADMIN_ID = 8068216414
+ADMIN_USERNAME = "sladkooe_vino"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -20,6 +20,7 @@ app = Flask(__name__)
 DB_FILE = "users.json"
 user_data = {}
 photo_storage = {}
+waiting_for_prompt = {} # Ожидание текста от пользователя
 
 def load_db():
     global user_data
@@ -60,13 +61,26 @@ def is_subscription_active(user_id):
         return True
     return False
 
-# Проверка на админа: по ID или по юзернейму
 def is_admin(user_id, username=None):
     if user_id == ADMIN_ID:
         return True
     if username and username.lower() == ADMIN_USERNAME.lower():
         return True
     return False
+
+# --- ФУНКЦИЯ ДЛЯ УМНОГО ПРОМПТА (НЕЙРОСЕТЬ ПОНИМАЕТ ТЕКСТ) ---
+def get_smart_prompt(user_request):
+    # Используем бесплатный текстовый API для расширения запроса
+    try:
+        # Запрос к бесплатной Llama/GPT модели
+        url = "https://text.pollinations.ai/" + urllib.parse.quote(f"Expand this image generation prompt for a highly detailed, realistic image. User wants: {user_request}. Only output the prompt, no extra words.")
+        response = requests.get(url, timeout=15)
+        if response.status_code == 200:
+            return response.text.strip()
+    except:
+        pass
+    # Если ИИ не ответил, используем запрос пользователя как есть
+    return user_request
 
 @app.route('/')
 def health():
@@ -81,15 +95,13 @@ def run_bot():
 def start(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username
-    
-    # Принудительно создаем запись при старте
-    data = get_user_data(user_id, username)
-    save_db()
+    get_user_data(user_id, username)
     
     if is_admin(user_id, username):
-        bot.reply_to(message, "👑 Привет, Админ! Тебе доступны команды:\n/stats - статистика\n/give <ID или @username> <кол-во> - выдать кредиты")
-        return # Админу не показываем сообщение о бесплатной попытке
+        bot.reply_to(message, "👑 Привет, Админ! Твои команды:\n/stats - статистика\n/give <ID или @username> <кол-во> - выдать кредиты")
+        return
     
+    data = get_user_data(user_id)
     if data["credits"] == 1 and not is_subscription_active(user_id):
         bot.reply_to(message, "Привет! Отправь мне фото, и я сделаю из него конфетку. У тебя есть 1 бесплатная попытка!")
     else:
@@ -102,72 +114,50 @@ def buy(message: Message):
     markup.add(InlineKeyboardButton("♾️ Безлимит на месяц (150 ⭐)", callback_data="buy_sub"))
     bot.reply_to(message, "Выбери подходящий тариф:", reply_markup=markup)
 
-# --- АДМИНСКИЕ КОМАНДЫ ---
+# --- АДМИНКА ---
 @bot.message_handler(commands=['stats'])
 def stats(message: Message):
-    if not is_admin(message.from_user.id, message.from_user.username):
-        return
+    if not is_admin(message.from_user.id, message.from_user.username): return
     total_users = len(user_data)
     total_credits = sum(d.get("credits", 0) for d in user_data.values())
-    bot.reply_to(message, f"📊 Статистика:\nПользователей: {total_users}\nВсего генераций на балансах: {total_credits}")
+    bot.reply_to(message, f"📊 Статистика:\nПользователей: {total_users}\nГенераций на балансах: {total_credits}")
 
 @bot.message_handler(commands=['give'])
 def give_credits(message: Message):
-    if not is_admin(message.from_user.id, message.from_user.username):
-        return
+    if not is_admin(message.from_user.id, message.from_user.username): return
     try:
         parts = message.text.split()
-        if len(parts) != 3:
-            bot.reply_to(message, "Использование: /give <ID или @username> <кол-во>")
-            return
-        
-        target = parts[1]
-        amount = int(parts[2])
-        
+        if len(parts) != 3: return bot.reply_to(message, "Использование: /give <ID или @username> <кол-во>")
+        target, amount = parts[1], int(parts[2])
         target_id = None
         
-        if target.isdigit():
-            target_id = target
+        if target.isdigit(): target_id = target
         elif target.startswith('@'):
             username = target[1:].lower()
-            # Ищем пользователя по юзернейму в базе (без учета регистра)
             for uid, udata in user_data.items():
                 if udata.get("username") and udata.get("username").lower() == username:
-                    target_id = uid
-                    break
-            if not target_id:
-                bot.reply_to(message, f"Пользователь {target} не найден в базе (он еще не писал боту).")
-                return
-        else:
-            bot.reply_to(message, "Неверный формат. Введите ID или @username.")
-            return
-
-        if target_id not in user_data:
-            user_data[target_id] = {"credits": 0, "subscription_end": None, "username": None}
-            
+                    target_id = uid; break
+            if not target_id: return bot.reply_to(message, "Пользователь не найден в базе.")
+        
+        if target_id not in user_data: user_data[target_id] = {"credits": 0, "subscription_end": None, "username": None}
         user_data[target_id]["credits"] += amount
         save_db()
-        
-        bot.reply_to(message, f"✅ Пользователю {target} выдано {amount} генераций.")
-        try:
-            bot.send_message(target_id, f"🎁 Тебе начислено {amount} генераций от администратора!")
-        except:
-            pass
-    except Exception as e:
-        bot.reply_to(message, f"Ошибка: {e}")
+        bot.reply_to(message, f"✅ {target} выдано {amount} генераций.")
+        try: bot.send_message(target_id, f"🎁 Тебе начислено {amount} генераций!")
+        except: pass
+    except Exception as e: bot.reply_to(message, f"Ошибка: {e}")
 
 # --- ОПЛАТА ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def handle_buy_button(call):
     bot.answer_callback_query(call.id)
     if call.data == "buy_pack":
-        bot.send_invoice(chat_id=call.message.chat.id, title="Пакет 20 генераций", description="Разовая покупка 20 обработок фото.", invoice_payload="pack_20", provider_token="", currency="XTR", prices=[LabeledPrice(label="20 генераций", amount=100)])
+        bot.send_invoice(chat_id=call.message.chat.id, title="20 генераций", description="Разовая покупка", invoice_payload="pack_20", provider_token="", currency="XTR", prices=[LabeledPrice(label="20 генераций", amount=100)])
     elif call.data == "buy_sub":
-        bot.send_invoice(chat_id=call.message.chat.id, title="Безлимит на 1 месяц", description="Неограниченное количество обработок фото в течение 30 дней.", invoice_payload="sub_month", provider_token="", currency="XTR", prices=[LabeledPrice(label="Безлимит на месяц", amount=150)])
+        bot.send_invoice(chat_id=call.message.chat.id, title="Безлимит", description="30 дней", invoice_payload="sub_month", provider_token="", currency="XTR", prices=[LabeledPrice(label="Безлимит", amount=150)])
 
 @bot.pre_checkout_query_handler(func=lambda query: True)
-def checkout(pre_checkout_query):
-    bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+def checkout(pre_checkout_query): bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 @bot.message_handler(content_types=['successful_payment'])
 def got_payment(message: Message):
@@ -175,13 +165,11 @@ def got_payment(message: Message):
     user_id = message.from_user.id
     data = get_user_data(user_id)
     if payload == "pack_20":
-        data["credits"] += 20
-        save_db()
-        bot.send_message(user_id, "✅ Оплата прошла! Тебе начислено 20 генераций. Отправляй фото!")
+        data["credits"] += 20; save_db()
+        bot.send_message(user_id, "✅ Начислено 20 генераций!")
     elif payload == "sub_month":
-        data["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
-        save_db()
-        bot.send_message(user_id, "✅ Оплата прошла! У тебя активирован безлимит на 30 дней. Отправляй фото!")
+        data["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat(); save_db()
+        bot.send_message(user_id, "✅ Безлимит на 30 дней!")
 
 # --- ОБРАБОТКА ФОТО ---
 @bot.message_handler(content_types=['photo'])
@@ -191,15 +179,16 @@ def handle_photo(message: Message):
     data = get_user_data(user_id, username)
     
     if not is_subscription_active(user_id) and data["credits"] <= 0:
-        bot.reply_to(message, "У тебя закончились генерации или подписка. Купи пакет: /buy")
-        return
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
 
     photo_storage[user_id] = message.photo[-1].file_id 
+    waiting_for_prompt.pop(user_id, None) # Сбрасываем ожидание
 
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("✨ Улучшить качество", callback_data="style_enhance"))
     markup.add(InlineKeyboardButton("🎨 Стиль Аниме", callback_data="style_anime"))
-    bot.reply_to(message, "Выбери стиль обработки:", reply_markup=markup)
+    markup.add(InlineKeyboardButton("✍️ Свой запрос (ИИ)", callback_data="style_custom"))
+    bot.reply_to(message, "Выбери стиль или напиши свой запрос:", reply_markup=markup)
 
 # --- ОБРАБОТКА КНОПОК ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
@@ -208,29 +197,58 @@ def handle_style(call):
     data = get_user_data(user_id)
     
     if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
-        bot.answer_callback_query(call.id, "Нет генераций! Купи пакет: /buy")
-        return
+        return bot.answer_callback_query(call.id, "Нет генераций! Купи пакет: /buy")
 
     bot.answer_callback_query(call.id)
-    
     if not photo_storage.get(user_id):
-        bot.send_message(call.message.chat.id, "Ошибка: фото не найдено. Отправь фото заново.")
+        return bot.send_message(call.message.chat.id, "Ошибка: фото не найдено. Отправь заново.")
+
+    if call.data == "style_custom":
+        # Просим пользователя ввести текст
+        waiting_for_prompt[user_id] = True
+        bot.send_message(call.message.chat.id, "Напиши, что ты хочешь сделать с фото (например: 'добавь кошачьи уши' или 'сделай фон космосом'):", reply_markup=ForceReply())
         return
 
-    bot.edit_message_text("⏳ Нейросеть колдует...", call.message.chat.id, call.message.message_id)
+    # Для обычных кнопок
+    process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
 
+# --- ОБРАБОТКА ТЕКСТОВОГО ЗАПРОСА ---
+@bot.message_handler(func=lambda message: message.from_user.id in waiting_for_prompt)
+def handle_custom_text(message: Message):
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    user_text = message.text
+    
+    waiting_for_prompt.pop(user_id, None) # Убираем ожидание
+    
+    if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+    if not photo_storage.get(user_id):
+        return bot.reply_to(message, "Фото не найдено. Отправь заново.")
+
+    msg = bot.reply_to(message, "🧠 ИИ обрабатывает твой запрос...")
+    
+    # Получаем "умный" промпт через текстовую нейросеть
+    smart_prompt = get_smart_prompt(user_text)
+    
+    process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id, is_custom=True)
+
+# --- ФУНКЦИЯ ГЕНЕРАЦИИ ---
+def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=False):
     try:
-        prompt = "anime style portrait" if call.data == "style_anime" else "high quality, detailed, masterpiece"
+        bot.edit_message_text("⏳ Нейросеть рисует... Это займет до 30 секунд.", chat_id, message_id)
+        
         encoded_prompt = urllib.parse.quote(prompt)
+        # Генерируем картинку
         image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512&nologo=true"
         
-        response = requests.get(image_url, timeout=30)
+        response = requests.get(image_url, timeout=40)
         
         if response.status_code == 200:
             bot.send_photo(
-                chat_id=call.message.chat.id,
+                chat_id=chat_id,
                 photo=response.content,
-                caption=f"✅ Сгенерировано! (Стиль: {call.data})"
+                caption=f"✅ Готово! (Запрос: {prompt[:50]}...)"
             )
             
             if not is_subscription_active(user_id):
@@ -240,11 +258,11 @@ def handle_style(call):
             else:
                 bot.send_message(user_id, "У тебя активен безлимит ♾️")
         else:
-            bot.send_message(call.message.chat.id, "Ошибка: нейросеть не смогла сгенерировать фото.")
+            bot.send_message(chat_id, "Ошибка нейросети. Попробуй позже.")
             
     except Exception as e:
         print(f"Ошибка генерации: {e}")
-        bot.send_message(call.message.chat.id, "Произошла ошибка при генерации. Попробуй позже.")
+        bot.send_message(chat_id, "Произошла ошибка при генерации. Попробуй позже.")
 
 # --- ЗАПУСК ---
 if __name__ == '__main__':
