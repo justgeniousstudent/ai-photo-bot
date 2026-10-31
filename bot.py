@@ -31,7 +31,15 @@ DB_FILE = "users.json"
 SETTINGS_FILE = "settings.json"
 user_data = {}
 promo_codes = {}
-settings = {"welcome_text": "Привет! Отправь фото или нажми '🎨 Генерация фото'.", "price_20": 100, "price_sub": 150, "free_tries": 1, "maintenance": False}
+settings = {
+    "welcome_text": "Привет! Отправь фото или нажми '🎨 Генерация фото'.",
+    "price_20": 100,
+    "price_sub": 150,
+    "price_chat": 20,
+    "free_tries": 1,
+    "free_chat_tries": 3,
+    "maintenance": False
+}
 last_prompt = {}
 admin_logs = []
 
@@ -64,7 +72,13 @@ def log_admin(action, admin_id):
 def get_user_data(user_id, username=None):
     user_id_str = str(user_id)
     if user_id_str not in user_data:
-        user_data[user_id_str] = {"credits": settings.get("free_tries", 1), "subscription_end": None, "username": username, "total_generated": 0}
+        user_data[user_id_str] = {
+            "credits": settings.get("free_tries", 1),
+            "chat_requests": settings.get("free_chat_tries", 3),
+            "subscription_end": None,
+            "username": username,
+            "total_generated": 0
+        }
         save_db()
     elif username and user_data[user_id_str].get("username") != username:
         user_data[user_id_str]["username"] = username
@@ -90,6 +104,15 @@ def get_smart_prompt(user_request):
     except: pass
     return user_request
 
+def get_ai_chat_response(user_text):
+    try:
+        # Бесплатная текстовая модель через pollinations
+        url = "https://text.pollinations.ai/" + urllib.parse.quote(user_text)
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200: return response.text.strip()
+    except: pass
+    return "❌ ИИ временно недоступен. Попробуй позже."
+
 @app.route('/')
 def health(): return "Bot is running"
 
@@ -100,11 +123,157 @@ def run_bot():
 def get_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("👤 Профиль"), KeyboardButton("💳 Купить"))
-    markup.add(KeyboardButton("🎨 Генерация фото"), KeyboardButton("🆘 Помощь"))
-    markup.add(KeyboardButton("🎁 Промокод"))
+    markup.add(KeyboardButton("🎨 Генерация фото"), KeyboardButton("💬 ИИ-Чат"))
+    markup.add(KeyboardButton("🎁 Промокод"), KeyboardButton("🆘 Помощь"))
     return markup
 
-# --- АДМИН-ПАНЕЛЬ (ВЫШЕ ВСЕХ) ---
+# --- ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ---
+@bot.message_handler(commands=['start'])
+def start(message: Message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    get_user_data(user_id, username)
+    if settings.get("maintenance") and not is_admin(user_id, username):
+        return bot.reply_to(message, "🔧 Бот на техобслуживании. Заходите позже.")
+    if is_admin(user_id, username):
+        bot.reply_to(message, "👑 Привет, Админ! Жми /admin_menu.", reply_markup=get_main_keyboard())
+        return
+    bot.reply_to(message, settings.get("welcome_text", "Привет!"), reply_markup=get_main_keyboard())
+
+@bot.message_handler(func=lambda message: message.text == "👤 Профиль")
+def profile(message: Message):
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    sub_status = "Активен" if is_subscription_active(user_id) else "Нет"
+    bot.reply_to(message, f"👤 Твой профиль:\nID: {user_id}\nГенераций: {data['credits']}\nЗапросов к ИИ: {data.get('chat_requests', 0)}\nБезлимит: {sub_status}\nВсего создано: {data.get('total_generated', 0)}")
+
+@bot.message_handler(func=lambda message: message.text == "💳 Купить")
+def buy_menu(message: Message):
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(f"🎫 20 генераций ({settings['price_20']} ⭐)", callback_data="buy_pack"))
+    markup.add(InlineKeyboardButton(f"♾️ Безлимит на месяц ({settings['price_sub']} ⭐)", callback_data="buy_sub"))
+    markup.add(InlineKeyboardButton(f"💬 100 запросов к ИИ ({settings['price_chat']} ⭐)", callback_data="buy_chat"))
+    bot.reply_to(message, "Выбери тариф:", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "🆘 Помощь")
+def help_menu(message: Message):
+    bot.reply_to(message, "Отправь фото и выбери стиль. Или нажми '🎨 Генерация фото' / '💬 ИИ-Чат'.")
+
+@bot.message_handler(func=lambda message: message.text == "🎁 Промокод")
+def promo_button(message: Message):
+    msg = bot.reply_to(message, "Введи промокод:", reply_markup=ForceReply())
+    bot.register_next_step_handler(msg, process_user_promo)
+
+def process_user_promo(message: Message):
+    try:
+        code = message.text.strip().upper()
+        if code in promo_codes:
+            amount = promo_codes.pop(code)
+            save_db()
+            data = get_user_data(message.from_user.id)
+            data["credits"] += amount
+            save_db()
+            bot.reply_to(message, f"✅ +{amount} кредитов.")
+        else:
+            bot.reply_to(message, "❌ Неверный код.")
+    except: pass
+
+# --- ИИ-ЧАТ ---
+@bot.message_handler(func=lambda message: message.text == "💬 ИИ-Чат")
+def start_chat(message: Message):
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    if data.get("chat_requests", 0) <= 0:
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton(f"🎫 100 запросов ({settings['price_chat']} ⭐)", callback_data="buy_chat"))
+        return bot.reply_to(message, "У тебя закончились запросы к ИИ. Купи пакет:", reply_markup=markup)
+    bot.reply_to(message, f"💬 Режим чата активирован. Осталось запросов: {data['chat_requests']}. Просто напиши свой вопрос.")
+
+@bot.message_handler(func=lambda message: message.text == "🎨 Генерация фото")
+def start_generation_prompt(message: Message):
+    user_id = message.from_user.id
+    if settings.get("maintenance"): return bot.reply_to(message, "🔧 Техработы.")
+    data = get_user_data(user_id)
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+    bot.reply_to(message, "Напиши, что нарисовать:")
+
+# --- ОБРАБОТЧИК ТЕКСТА (ИИ-ЧАТ) ---
+@bot.message_handler(func=lambda message: not message.text.startswith('/') and message.content_type == 'text')
+def handle_text(message: Message):
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    if settings.get("maintenance"): return
+    user_text = message.text.strip()
+    if len(user_text) < 2: return
+    
+    # Если это ИИ-чат (есть запросы)
+    if data.get("chat_requests", 0) > 0:
+        bot.send_chat_action(message.chat.id, 'typing')
+        answer = get_ai_chat_response(user_text)
+        data["chat_requests"] -= 1
+        save_db()
+        bot.reply_to(message, f"{answer}\n\n(Осталось запросов: {data['chat_requests']})")
+        return
+    
+    # Если это генерация картинок (нет запросов к чату, но есть кредиты)
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.reply_to(message, "У тебя нет кредитов. Купи: /buy")
+    msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
+    smart_prompt = get_smart_prompt(user_text)
+    process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
+
+# --- ОПЛАТА ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
+def handle_buy_button(call):
+    bot.answer_callback_query(call.id)
+    if call.data == "buy_pack":
+        bot.send_invoice(chat_id=call.message.chat.id, title="20 генераций", description="Разовая покупка", invoice_payload="pack_20", provider_token="", currency="XTR", prices=[LabeledPrice(label="20 генераций", amount=settings['price_20'])])
+    elif call.data == "buy_sub":
+        bot.send_invoice(chat_id=call.message.chat.id, title="Безлимит", description="30 дней", invoice_payload="sub_month", provider_token="", currency="XTR", prices=[LabeledPrice(label="Безлимит", amount=settings['price_sub'])])
+    elif call.data == "buy_chat":
+        bot.send_invoice(chat_id=call.message.chat.id, title="100 запросов к ИИ", description="Доступ к текстовому чату", invoice_payload="chat_100", provider_token="", currency="XTR", prices=[LabeledPrice(label="100 запросов", amount=settings['price_chat'])])
+
+@bot.pre_checkout_query_handler(func=lambda query: True)
+def checkout(pre_checkout_query): bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@bot.message_handler(content_types=['successful_payment'])
+def got_payment(message: Message):
+    payload = message.successful_payment.invoice_payload
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    if payload == "pack_20":
+        data["credits"] += 20; save_db()
+        bot.send_message(user_id, "✅ Начислено 20 генераций!")
+    elif payload == "sub_month":
+        data["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat(); save_db()
+        bot.send_message(user_id, "✅ Безлимит на 30 дней!")
+    elif payload == "chat_100":
+        data["chat_requests"] = data.get("chat_requests", 0) + 100; save_db()
+        bot.send_message(user_id, "✅ Начислено 100 запросов к ИИ!")
+
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message: Message):
+    user_id = message.from_user.id
+    if settings.get("maintenance"): return bot.reply_to(message, "🔧 Техработы.")
+    data = get_user_data(user_id)
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("✨ Улучшить", callback_data="style_enhance"))
+    markup.add(InlineKeyboardButton("🎨 Аниме", callback_data="style_anime"))
+    bot.reply_to(message, "Выбери стиль:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
+def handle_style(call):
+    user_id = call.from_user.id
+    data = get_user_data(user_id)
+    if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
+        return bot.answer_callback_query(call.id, "Нет генераций! Купи: /buy")
+    bot.answer_callback_query(call.id)
+    process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
+
+# --- АДМИН-ПАНЕЛЬ ---
 @bot.message_handler(commands=['admin_menu'])
 def admin_menu(message: Message):
     if not is_admin(message.from_user.id, message.from_user.username): return
@@ -148,6 +317,7 @@ def handle_admin_buttons(call: CallbackQuery):
         markup.add(InlineKeyboardButton("🔧 Техработы ВКЛ/ВЫКЛ", callback_data="set_maintenance"))
         markup.add(InlineKeyboardButton("💰 Цена 20 = " + str(settings['price_20']), callback_data="set_price20"))
         markup.add(InlineKeyboardButton("💰 Цена Подписки = " + str(settings['price_sub']), callback_data="set_price_sub"))
+        markup.add(InlineKeyboardButton("💰 Цена ИИ-Чата = " + str(settings['price_chat']), callback_data="set_price_chat"))
         bot.send_message(call.message.chat.id, "⚙️ Настройки:", reply_markup=markup)
     elif call.data == "set_welcome":
         msg = bot.send_message(call.message.chat.id, "Введи новый текст приветствия:", reply_markup=ForceReply())
@@ -162,6 +332,9 @@ def handle_admin_buttons(call: CallbackQuery):
     elif call.data == "set_price_sub":
         msg = bot.send_message(call.message.chat.id, "Введи новую цену для подписки:", reply_markup=ForceReply())
         bot.register_next_step_handler(msg, lambda m: set_price(m, "price_sub"))
+    elif call.data == "set_price_chat":
+        msg = bot.send_message(call.message.chat.id, "Введи новую цену для 100 запросов к ИИ:", reply_markup=ForceReply())
+        bot.register_next_step_handler(msg, lambda m: set_price(m, "price_chat"))
     elif call.data == "adm_giveall":
         msg = bot.send_message(call.message.chat.id, "Сколько кредитов выдать ВСЕМ пользователям?", reply_markup=ForceReply())
         bot.register_next_step_handler(msg, process_giveall)
@@ -293,10 +466,11 @@ def manage_user(call: CallbackQuery):
     uid = call.data.split("_")[2]
     udata = user_data.get(uid)
     if not udata: return
-    text = f"👤 @{udata.get('username', 'Нет')}\nID: {uid}\nКредиты: {udata.get('credits', 0)}\nБезлимит: {'Да' if is_subscription_active(uid) else 'Нет'}"
+    text = f"👤 @{udata.get('username', 'Нет')}\nID: {uid}\nКредиты: {udata.get('credits', 0)}\nЗапросы ИИ: {udata.get('chat_requests', 0)}\nБезлимит: {'Да' if is_subscription_active(uid) else 'Нет'}"
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton("➕ 10", callback_data=f"act_cred10_{uid}"), InlineKeyboardButton("➕ 50", callback_data=f"act_cred50_{uid}"))
     markup.row(InlineKeyboardButton("♾️ Безлимит", callback_data=f"act_sub_{uid}"), InlineKeyboardButton("❌ Снять", callback_data=f"act_unsub_{uid}"))
+    markup.row(InlineKeyboardButton("💬 +10 ИИ", callback_data=f"act_chat10_{uid}"), InlineKeyboardButton("💬 +50 ИИ", callback_data=f"act_chat50_{uid}"))
     markup.add(InlineKeyboardButton("🔙 К списку", callback_data="adm_users_0"))
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
@@ -309,128 +483,10 @@ def action_user(call: CallbackQuery):
     elif action == "cred50": user_data[uid]["credits"] += 50
     elif action == "sub": user_data[uid]["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
     elif action == "unsub": user_data[uid]["subscription_end"] = None
+    elif action == "chat10": user_data[uid]["chat_requests"] = user_data[uid].get("chat_requests", 0) + 10
+    elif action == "chat50": user_data[uid]["chat_requests"] = user_data[uid].get("chat_requests", 0) + 50
     save_db()
     manage_user(call)
-
-# --- ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ---
-@bot.message_handler(commands=['start'])
-def start(message: Message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    get_user_data(user_id, username)
-    if settings.get("maintenance") and not is_admin(user_id, username):
-        return bot.reply_to(message, "🔧 Бот на техобслуживании. Заходите позже.")
-    if is_admin(user_id, username):
-        bot.reply_to(message, "👑 Привет, Админ! Жми /admin_menu.", reply_markup=get_main_keyboard())
-        return
-    bot.reply_to(message, settings.get("welcome_text", "Привет!"), reply_markup=get_main_keyboard())
-
-@bot.message_handler(func=lambda message: message.text == "👤 Профиль")
-def profile(message: Message):
-    user_id = message.from_user.id
-    data = get_user_data(user_id)
-    sub_status = "Активен" if is_subscription_active(user_id) else "Нет"
-    bot.reply_to(message, f"👤 Твой профиль:\nID: {user_id}\nГенераций: {data['credits']}\nБезлимит: {sub_status}\nВсего создано: {data.get('total_generated', 0)}")
-
-@bot.message_handler(func=lambda message: message.text == "💳 Купить")
-def buy_menu(message: Message):
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton(f"🎫 20 генераций ({settings['price_20']} ⭐)", callback_data="buy_pack"))
-    markup.add(InlineKeyboardButton(f"♾️ Безлимит на месяц ({settings['price_sub']} ⭐)", callback_data="buy_sub"))
-    bot.reply_to(message, "Выбери тариф:", reply_markup=markup)
-
-@bot.message_handler(func=lambda message: message.text == "🆘 Помощь")
-def help_menu(message: Message):
-    bot.reply_to(message, "Отправь фото и выбери стиль. Или просто напиши, что хочешь нарисовать.")
-
-@bot.message_handler(func=lambda message: message.text == "🎁 Промокод")
-def promo_button(message: Message):
-    msg = bot.reply_to(message, "Введи промокод:", reply_markup=ForceReply())
-    bot.register_next_step_handler(msg, process_user_promo)
-
-def process_user_promo(message: Message):
-    try:
-        code = message.text.strip().upper()
-        if code in promo_codes:
-            amount = promo_codes.pop(code)
-            save_db()
-            data = get_user_data(message.from_user.id)
-            data["credits"] += amount
-            save_db()
-            bot.reply_to(message, f"✅ +{amount} кредитов.")
-        else:
-            bot.reply_to(message, "❌ Неверный код.")
-    except: pass
-
-@bot.message_handler(func=lambda message: message.text == "🎨 Генерация фото")
-def start_generation_prompt(message: Message):
-    user_id = message.from_user.id
-    if settings.get("maintenance"): return bot.reply_to(message, "🔧 Техработы.")
-    data = get_user_data(user_id)
-    if not is_subscription_active(user_id) and data["credits"] <= 0:
-        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
-    bot.reply_to(message, "Напиши, что нарисовать:")
-
-# --- ОБРАБОТЧИК ТЕКСТА (ТОЛЬКО ЕСЛИ НЕ КОМАНДА) ---
-@bot.message_handler(func=lambda message: not message.text.startswith('/') and message.content_type == 'text')
-def handle_text_generation(message: Message):
-    user_id = message.from_user.id
-    data = get_user_data(user_id)
-    if settings.get("maintenance"): return
-    if not is_subscription_active(user_id) and data["credits"] <= 0:
-        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
-    
-    user_text = message.text.strip()
-    if len(user_text) < 2: return
-    
-    msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
-    smart_prompt = get_smart_prompt(user_text)
-    process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
-
-# --- ОПЛАТА ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
-def handle_buy_button(call):
-    bot.answer_callback_query(call.id)
-    if call.data == "buy_pack":
-        bot.send_invoice(chat_id=call.message.chat.id, title="20 генераций", description="Разовая покупка", invoice_payload="pack_20", provider_token="", currency="XTR", prices=[LabeledPrice(label="20 генераций", amount=settings['price_20'])])
-    elif call.data == "buy_sub":
-        bot.send_invoice(chat_id=call.message.chat.id, title="Безлимит", description="30 дней", invoice_payload="sub_month", provider_token="", currency="XTR", prices=[LabeledPrice(label="Безлимит", amount=settings['price_sub'])])
-
-@bot.pre_checkout_query_handler(func=lambda query: True)
-def checkout(pre_checkout_query): bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-@bot.message_handler(content_types=['successful_payment'])
-def got_payment(message: Message):
-    payload = message.successful_payment.invoice_payload
-    user_id = message.from_user.id
-    data = get_user_data(user_id)
-    if payload == "pack_20":
-        data["credits"] += 20; save_db()
-        bot.send_message(user_id, "✅ Начислено 20 генераций!")
-    elif payload == "sub_month":
-        data["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat(); save_db()
-        bot.send_message(user_id, "✅ Безлимит на 30 дней!")
-
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message: Message):
-    user_id = message.from_user.id
-    if settings.get("maintenance"): return bot.reply_to(message, "🔧 Техработы.")
-    data = get_user_data(user_id)
-    if not is_subscription_active(user_id) and data["credits"] <= 0:
-        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("✨ Улучшить", callback_data="style_enhance"))
-    markup.add(InlineKeyboardButton("🎨 Аниме", callback_data="style_anime"))
-    bot.reply_to(message, "Выбери стиль:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
-def handle_style(call):
-    user_id = call.from_user.id
-    data = get_user_data(user_id)
-    if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
-        return bot.answer_callback_query(call.id, "Нет генераций! Купи: /buy")
-    bot.answer_callback_query(call.id)
-    process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
 
 # --- ГЕНЕРАЦИЯ (5 ИИ) ---
 def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=False):
@@ -517,7 +573,7 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
             bot.send_message(user_id, f"Осталось: {data['credits']}", reply_markup=get_main_keyboard())
         else:
             save_db()
-            bot.send_message(user_id, "Безлимит ♾️", reply_markup=get_main_keyboard())
+                       bot.send_message(user_id, "Безлимит ♾️", reply_markup=get_main_keyboard())
     else:
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔄 Попробовать снова", callback_data=f"retry_{user_id}"))
