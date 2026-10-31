@@ -4,6 +4,7 @@ import threading
 import datetime
 import urllib.parse
 import requests
+import time
 from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, LabeledPrice, ForceReply
@@ -20,7 +21,7 @@ app = Flask(__name__)
 DB_FILE = "users.json"
 user_data = {}
 photo_storage = {}
-waiting_for_prompt = {} # Ожидание текста от пользователя
+waiting_for_prompt = {}
 
 def load_db():
     global user_data
@@ -68,18 +69,15 @@ def is_admin(user_id, username=None):
         return True
     return False
 
-# --- ФУНКЦИЯ ДЛЯ УМНОГО ПРОМПТА (НЕЙРОСЕТЬ ПОНИМАЕТ ТЕКСТ) ---
+# --- УМНЫЙ ПРОМПТ ---
 def get_smart_prompt(user_request):
-    # Используем бесплатный текстовый API для расширения запроса
     try:
-        # Запрос к бесплатной Llama/GPT модели
-        url = "https://text.pollinations.ai/" + urllib.parse.quote(f"Expand this image generation prompt for a highly detailed, realistic image. User wants: {user_request}. Only output the prompt, no extra words.")
+        url = "https://text.pollinations.ai/" + urllib.parse.quote(f"Create a detailed image generation prompt for: {user_request}. Only output the prompt.")
         response = requests.get(url, timeout=15)
         if response.status_code == 200:
             return response.text.strip()
     except:
         pass
-    # Если ИИ не ответил, используем запрос пользователя как есть
     return user_request
 
 @app.route('/')
@@ -182,7 +180,7 @@ def handle_photo(message: Message):
         return bot.reply_to(message, "Генерации закончились. Купи: /buy")
 
     photo_storage[user_id] = message.photo[-1].file_id 
-    waiting_for_prompt.pop(user_id, None) # Сбрасываем ожидание
+    waiting_for_prompt.pop(user_id, None)
 
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("✨ Улучшить качество", callback_data="style_enhance"))
@@ -204,12 +202,10 @@ def handle_style(call):
         return bot.send_message(call.message.chat.id, "Ошибка: фото не найдено. Отправь заново.")
 
     if call.data == "style_custom":
-        # Просим пользователя ввести текст
         waiting_for_prompt[user_id] = True
-        bot.send_message(call.message.chat.id, "Напиши, что ты хочешь сделать с фото (например: 'добавь кошачьи уши' или 'сделай фон космосом'):", reply_markup=ForceReply())
+        bot.send_message(call.message.chat.id, "Напиши, что ты хочешь сделать с фото:", reply_markup=ForceReply())
         return
 
-    # Для обычных кнопок
     process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
 
 # --- ОБРАБОТКА ТЕКСТОВОГО ЗАПРОСА ---
@@ -219,7 +215,7 @@ def handle_custom_text(message: Message):
     data = get_user_data(user_id)
     user_text = message.text
     
-    waiting_for_prompt.pop(user_id, None) # Убираем ожидание
+    waiting_for_prompt.pop(user_id, None)
     
     if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
         return bot.reply_to(message, "Генерации закончились. Купи: /buy")
@@ -227,42 +223,48 @@ def handle_custom_text(message: Message):
         return bot.reply_to(message, "Фото не найдено. Отправь заново.")
 
     msg = bot.reply_to(message, "🧠 ИИ обрабатывает твой запрос...")
-    
-    # Получаем "умный" промпт через текстовую нейросеть
     smart_prompt = get_smart_prompt(user_text)
-    
     process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id, is_custom=True)
 
-# --- ФУНКЦИЯ ГЕНЕРАЦИИ ---
+# --- ФУНКЦИЯ ГЕНЕРАЦИИ (С 3 ПОПЫТКАМИ) ---
 def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=False):
-    try:
-        bot.edit_message_text("⏳ Нейросеть рисует... Это займет до 30 секунд.", chat_id, message_id)
-        
-        encoded_prompt = urllib.parse.quote(prompt)
-        # Генерируем картинку
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512&nologo=true"
-        
-        response = requests.get(image_url, timeout=40)
-        
-        if response.status_code == 200:
-            bot.send_photo(
-                chat_id=chat_id,
-                photo=response.content,
-                caption=f"✅ Готово! (Запрос: {prompt[:50]}...)"
-            )
+    encoded_prompt = urllib.parse.quote(prompt)
+    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512&nologo=true"
+    
+    bot.edit_message_text("⏳ Нейросеть рисует... (попытка 1)", chat_id, message_id)
+    
+    for attempt in range(3): # 3 попытки
+        try:
+            response = requests.get(image_url, timeout=45)
             
-            if not is_subscription_active(user_id):
-                data["credits"] -= 1
-                save_db()
-                bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
+            if response.status_code == 200:
+                bot.send_photo(
+                    chat_id=chat_id,
+                    photo=response.content,
+                    caption=f"✅ Готово! (Запрос: {prompt[:50]}...)"
+                )
+                
+                if not is_subscription_active(user_id):
+                    data["credits"] -= 1
+                    save_db()
+                    bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
+                else:
+                    bot.send_message(user_id, "У тебя активен безлимит ♾️")
+                return # Успех
+            
             else:
-                bot.send_message(user_id, "У тебя активен безлимит ♾️")
-        else:
-            bot.send_message(chat_id, "Ошибка нейросети. Попробуй позже.")
-            
-    except Exception as e:
-        print(f"Ошибка генерации: {e}")
-        bot.send_message(chat_id, "Произошла ошибка при генерации. Попробуй позже.")
+                if attempt < 2:
+                    bot.edit_message_text(f"⏳ Сервер перегружен. Пробую еще раз... (попытка {attempt+2})", chat_id, message_id)
+                    time.sleep(4) # Ждем 4 секунды перед повтором
+                else:
+                    bot.edit_message_text("❌ Нейросеть перегружена. Попробуй позже.", chat_id, message_id)
+                    
+        except Exception as e:
+            print(f"Ошибка генерации (попытка {attempt+1}): {e}")
+            if attempt < 2:
+                time.sleep(4)
+            else:
+                bot.send_message(chat_id, "Произошла ошибка при генерации. Попробуй позже.")
 
 # --- ЗАПУСК ---
 if __name__ == '__main__':
