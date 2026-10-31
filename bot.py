@@ -135,7 +135,7 @@ def get_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("👤 Профиль"), KeyboardButton("💳 Купить"))
     markup.add(KeyboardButton("🎨 Генерация фото"), KeyboardButton("💬 ИИ-Чат"))
-    markup.add(KeyboardButton("🎁 Промокод"), KeyboardButton("🧀 Бонус 100 запросов"))
+    markup.add(KeyboardButton("🎁 Промокод"), KeyboardButton("🎁 100 Бонусных Запросов"))
     markup.add(KeyboardButton("🆘 Помощь"))
     return markup
 
@@ -190,8 +190,8 @@ def process_user_promo(message: Message):
             bot.reply_to(message, "❌ Неверный код.")
     except: pass
 
-# --- СМЕШНАЯ ФУНКЦИЯ (БОНУС-ЛОВУШКА) ---
-@bot.message_handler(func=lambda message: message.text == "🧀 Бонус-Ловушка")
+# --- СМЕШНАЯ ФУНКЦИЯ (БОНУС 100) ---
+@bot.message_handler(func=lambda message: message.text == "🎁 100 Бонусных Запросов")
 def trap_bonus(message: Message):
     caption = (
         "🧀 Бесплатный сыр только в мышеловке! 🐭\n\n"
@@ -245,6 +245,10 @@ def start_generation_prompt(message: Message):
 # --- ОБРАБОТЧИК ТЕКСТА (ЧАТ И ГЕНЕРАЦИЯ) ---
 @bot.message_handler(func=lambda message: not message.text.startswith('/') and message.content_type == 'text')
 def handle_text(message: Message):
+    # ЖЕСТКАЯ ЗАЩИТА: если текст совпадает с кнопками, не отправляем в ИИ
+    if message.text in ["👤 Профиль", "💳 Купить", "🎨 Генерация фото", "💬 ИИ-Чат", "🎁 Промокод", "🎁 100 Бонусных Запросов", "🆘 Помощь"]:
+        return
+
     user_id = message.from_user.id
     data = get_user_data(user_id)
     if settings.get("maintenance"): return
