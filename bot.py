@@ -104,129 +104,7 @@ def get_main_keyboard():
     markup.add(KeyboardButton("🎁 Промокод"))
     return markup
 
-# --- ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ---
-@bot.message_handler(commands=['start'])
-def start(message: Message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    get_user_data(user_id, username)
-    if settings.get("maintenance") and not is_admin(user_id, username):
-        return bot.reply_to(message, "🔧 Бот на техобслуживании. Заходите позже.")
-    if is_admin(user_id, username):
-        bot.reply_to(message, "👑 Привет, Админ! Жми /admin_menu.", reply_markup=get_main_keyboard())
-        return
-    bot.reply_to(message, settings.get("welcome_text", "Привет!"), reply_markup=get_main_keyboard())
-
-@bot.message_handler(func=lambda message: message.text == "👤 Профиль")
-def profile(message: Message):
-    user_id = message.from_user.id
-    data = get_user_data(user_id)
-    sub_status = "Активен" if is_subscription_active(user_id) else "Нет"
-    bot.reply_to(message, f"👤 Твой профиль:\nID: {user_id}\nГенераций: {data['credits']}\nБезлимит: {sub_status}\nВсего создано: {data.get('total_generated', 0)}")
-
-@bot.message_handler(func=lambda message: message.text == "💳 Купить")
-def buy_menu(message: Message):
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton(f"🎫 20 генераций ({settings['price_20']} ⭐)", callback_data="buy_pack"))
-    markup.add(InlineKeyboardButton(f"♾️ Безлимит на месяц ({settings['price_sub']} ⭐)", callback_data="buy_sub"))
-    bot.reply_to(message, "Выбери тариф:", reply_markup=markup)
-
-@bot.message_handler(func=lambda message: message.text == "🆘 Помощь")
-def help_menu(message: Message):
-    bot.reply_to(message, "Отправь фото и выбери стиль. Или просто напиши, что хочешь нарисовать.")
-
-@bot.message_handler(func=lambda message: message.text == "🎁 Промокод")
-def promo_button(message: Message):
-    msg = bot.reply_to(message, "Введи промокод:", reply_markup=ForceReply())
-    bot.register_next_step_handler(msg, process_user_promo)
-
-def process_user_promo(message: Message):
-    try:
-        code = message.text.strip().upper()
-        if code in promo_codes:
-            amount = promo_codes.pop(code)
-            save_db()
-            data = get_user_data(message.from_user.id)
-            data["credits"] += amount
-            save_db()
-            bot.reply_to(message, f"✅ +{amount} кредитов.")
-        else:
-            bot.reply_to(message, "❌ Неверный код.")
-    except: pass
-
-@bot.message_handler(func=lambda message: message.text == "🎨 Генерация фото")
-def start_generation_prompt(message: Message):
-    user_id = message.from_user.id
-    if settings.get("maintenance"): return bot.reply_to(message, "🔧 Техработы.")
-    data = get_user_data(user_id)
-    if not is_subscription_active(user_id) and data["credits"] <= 0:
-        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
-    bot.reply_to(message, "Напиши, что нарисовать:")
-
-# Обработчик текста (с защитой от команд)
-@bot.message_handler(func=lambda message: True, content_types=['text'])
-def handle_text_generation(message: Message):
-    if message.text.startswith('/'):
-        return  # Игнорируем команды, чтобы они обрабатывались выше
-    
-    user_id = message.from_user.id
-    data = get_user_data(user_id)
-    if settings.get("maintenance"): return
-    if not is_subscription_active(user_id) and data["credits"] <= 0:
-        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
-    
-    user_text = message.text.strip()
-    if len(user_text) < 2: return
-    
-    msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
-    smart_prompt = get_smart_prompt(user_text)
-    process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
-def handle_buy_button(call):
-    bot.answer_callback_query(call.id)
-    if call.data == "buy_pack":
-        bot.send_invoice(chat_id=call.message.chat.id, title="20 генераций", description="Разовая покупка", invoice_payload="pack_20", provider_token="", currency="XTR", prices=[LabeledPrice(label="20 генераций", amount=settings['price_20'])])
-    elif call.data == "buy_sub":
-        bot.send_invoice(chat_id=call.message.chat.id, title="Безлимит", description="30 дней", invoice_payload="sub_month", provider_token="", currency="XTR", prices=[LabeledPrice(label="Безлимит", amount=settings['price_sub'])])
-
-@bot.pre_checkout_query_handler(func=lambda query: True)
-def checkout(pre_checkout_query): bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-@bot.message_handler(content_types=['successful_payment'])
-def got_payment(message: Message):
-    payload = message.successful_payment.invoice_payload
-    user_id = message.from_user.id
-    data = get_user_data(user_id)
-    if payload == "pack_20":
-        data["credits"] += 20; save_db()
-        bot.send_message(user_id, "✅ Начислено 20 генераций!")
-    elif payload == "sub_month":
-        data["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat(); save_db()
-        bot.send_message(user_id, "✅ Безлимит на 30 дней!")
-
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message: Message):
-    user_id = message.from_user.id
-    if settings.get("maintenance"): return bot.reply_to(message, "🔧 Техработы.")
-    data = get_user_data(user_id)
-    if not is_subscription_active(user_id) and data["credits"] <= 0:
-        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("✨ Улучшить", callback_data="style_enhance"))
-    markup.add(InlineKeyboardButton("🎨 Аниме", callback_data="style_anime"))
-    bot.reply_to(message, "Выбери стиль:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
-def handle_style(call):
-    user_id = call.from_user.id
-    data = get_user_data(user_id)
-    if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
-        return bot.answer_callback_query(call.id, "Нет генераций! Купи: /buy")
-    bot.answer_callback_query(call.id)
-    process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
-
-# --- АДМИН-ПАНЕЛЬ ---
+# --- АДМИН-ПАНЕЛЬ (ВЫШЕ ВСЕХ) ---
 @bot.message_handler(commands=['admin_menu'])
 def admin_menu(message: Message):
     if not is_admin(message.from_user.id, message.from_user.username): return
@@ -433,6 +311,126 @@ def action_user(call: CallbackQuery):
     elif action == "unsub": user_data[uid]["subscription_end"] = None
     save_db()
     manage_user(call)
+
+# --- ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ---
+@bot.message_handler(commands=['start'])
+def start(message: Message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    get_user_data(user_id, username)
+    if settings.get("maintenance") and not is_admin(user_id, username):
+        return bot.reply_to(message, "🔧 Бот на техобслуживании. Заходите позже.")
+    if is_admin(user_id, username):
+        bot.reply_to(message, "👑 Привет, Админ! Жми /admin_menu.", reply_markup=get_main_keyboard())
+        return
+    bot.reply_to(message, settings.get("welcome_text", "Привет!"), reply_markup=get_main_keyboard())
+
+@bot.message_handler(func=lambda message: message.text == "👤 Профиль")
+def profile(message: Message):
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    sub_status = "Активен" if is_subscription_active(user_id) else "Нет"
+    bot.reply_to(message, f"👤 Твой профиль:\nID: {user_id}\nГенераций: {data['credits']}\nБезлимит: {sub_status}\nВсего создано: {data.get('total_generated', 0)}")
+
+@bot.message_handler(func=lambda message: message.text == "💳 Купить")
+def buy_menu(message: Message):
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(f"🎫 20 генераций ({settings['price_20']} ⭐)", callback_data="buy_pack"))
+    markup.add(InlineKeyboardButton(f"♾️ Безлимит на месяц ({settings['price_sub']} ⭐)", callback_data="buy_sub"))
+    bot.reply_to(message, "Выбери тариф:", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "🆘 Помощь")
+def help_menu(message: Message):
+    bot.reply_to(message, "Отправь фото и выбери стиль. Или просто напиши, что хочешь нарисовать.")
+
+@bot.message_handler(func=lambda message: message.text == "🎁 Промокод")
+def promo_button(message: Message):
+    msg = bot.reply_to(message, "Введи промокод:", reply_markup=ForceReply())
+    bot.register_next_step_handler(msg, process_user_promo)
+
+def process_user_promo(message: Message):
+    try:
+        code = message.text.strip().upper()
+        if code in promo_codes:
+            amount = promo_codes.pop(code)
+            save_db()
+            data = get_user_data(message.from_user.id)
+            data["credits"] += amount
+            save_db()
+            bot.reply_to(message, f"✅ +{amount} кредитов.")
+        else:
+            bot.reply_to(message, "❌ Неверный код.")
+    except: pass
+
+@bot.message_handler(func=lambda message: message.text == "🎨 Генерация фото")
+def start_generation_prompt(message: Message):
+    user_id = message.from_user.id
+    if settings.get("maintenance"): return bot.reply_to(message, "🔧 Техработы.")
+    data = get_user_data(user_id)
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+    bot.reply_to(message, "Напиши, что нарисовать:")
+
+# --- ОБРАБОТЧИК ТЕКСТА (ТОЛЬКО ЕСЛИ НЕ КОМАНДА) ---
+@bot.message_handler(func=lambda message: not message.text.startswith('/') and message.content_type == 'text')
+def handle_text_generation(message: Message):
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    if settings.get("maintenance"): return
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+    
+    user_text = message.text.strip()
+    if len(user_text) < 2: return
+    
+    msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
+    smart_prompt = get_smart_prompt(user_text)
+    process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
+
+# --- ОПЛАТА ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
+def handle_buy_button(call):
+    bot.answer_callback_query(call.id)
+    if call.data == "buy_pack":
+        bot.send_invoice(chat_id=call.message.chat.id, title="20 генераций", description="Разовая покупка", invoice_payload="pack_20", provider_token="", currency="XTR", prices=[LabeledPrice(label="20 генераций", amount=settings['price_20'])])
+    elif call.data == "buy_sub":
+        bot.send_invoice(chat_id=call.message.chat.id, title="Безлимит", description="30 дней", invoice_payload="sub_month", provider_token="", currency="XTR", prices=[LabeledPrice(label="Безлимит", amount=settings['price_sub'])])
+
+@bot.pre_checkout_query_handler(func=lambda query: True)
+def checkout(pre_checkout_query): bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@bot.message_handler(content_types=['successful_payment'])
+def got_payment(message: Message):
+    payload = message.successful_payment.invoice_payload
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    if payload == "pack_20":
+        data["credits"] += 20; save_db()
+        bot.send_message(user_id, "✅ Начислено 20 генераций!")
+    elif payload == "sub_month":
+        data["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat(); save_db()
+        bot.send_message(user_id, "✅ Безлимит на 30 дней!")
+
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message: Message):
+    user_id = message.from_user.id
+    if settings.get("maintenance"): return bot.reply_to(message, "🔧 Техработы.")
+    data = get_user_data(user_id)
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("✨ Улучшить", callback_data="style_enhance"))
+    markup.add(InlineKeyboardButton("🎨 Аниме", callback_data="style_anime"))
+    bot.reply_to(message, "Выбери стиль:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
+def handle_style(call):
+    user_id = call.from_user.id
+    data = get_user_data(user_id)
+    if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
+        return bot.answer_callback_query(call.id, "Нет генераций! Купи: /buy")
+    bot.answer_callback_query(call.id)
+    process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
 
 # --- ГЕНЕРАЦИЯ (5 ИИ) ---
 def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=False):
