@@ -16,6 +16,7 @@ from telebot.types import (
     CallbackQuery
 )
 
+# --- НАСТРОЙКИ ---
 BOT_TOKEN = "9060154141:AAGrMlc_J7nAi6A-7ptLWq-Rstr0u1oTtrY"
 ADMIN_ID = 8068216414
 ADMIN_USERNAME = "sladkooe_vino"
@@ -25,6 +26,7 @@ CF_API_TOKEN = "cfut_qxccfcwH1bNSlvN05G1D7XUpnT1DeBfm5NkpfF0xb330f1e0"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
+# --- БАЗА ДАННЫХ ---
 DB_FILE = "users.json"
 SETTINGS_FILE = "settings.json"
 user_data = {}
@@ -110,7 +112,9 @@ def get_main_keyboard():
     markup.add(KeyboardButton("🎁 Промокод"), KeyboardButton("🎲 Случайный стиль"))
     markup.add(KeyboardButton("🎯 Ежедневный бонус"), KeyboardButton("📊 Статистика"))
     return markup
-    @bot.message_handler(commands=['start'])
+
+# --- ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ---
+@bot.message_handler(commands=['start'])
 def start(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username
@@ -262,7 +266,9 @@ def handle_style(call):
     if not photo_storage.get(user_id):
         return bot.send_message(call.message.chat.id, "Ошибка: фото не найдено.")
     process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
-    @bot.message_handler(commands=['admin_menu'])
+
+# --- АДМИН-ПАНЕЛЬ ---
+@bot.message_handler(commands=['admin_menu'])
 def admin_menu(message: Message):
     if not is_admin(message.from_user.id, message.from_user.username): return
     markup = InlineKeyboardMarkup()
@@ -276,8 +282,7 @@ def admin_menu(message: Message):
     markup.add(InlineKeyboardButton("📝 Логи", callback_data="adm_logs"))
     markup.add(InlineKeyboardButton("🚫 Баны", callback_data="adm_bans"))
     bot.reply_to(message, "🛠 Админ-панель:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('adm_'))
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('adm_'))
 def handle_admin_buttons(call: CallbackQuery):
     if not is_admin(call.from_user.id, call.from_user.username): return
     bot.answer_callback_query(call.id)
@@ -450,7 +455,8 @@ def action_user(call: CallbackQuery):
     elif action == "del": del user_data[uid]; save_db(); return bot.edit_message_text("Удален.", call.message.chat.id, call.message.message_id)
     save_db()
     manage_user(call)
-    # --- ГЕНЕРАЦИЯ (КАСКАД) ---
+
+# --- ГЕНЕРАЦИЯ (КАСКАД) ---
 def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=False):
     bot.edit_message_text("⏳ Рисую... (Пробую Cloudflare)", chat_id, message_id)
     image_bytes = None
