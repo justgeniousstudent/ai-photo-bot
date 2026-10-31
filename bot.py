@@ -104,12 +104,33 @@ def get_smart_prompt(user_request):
     except: pass
     return user_request
 
+# --- ФУНКЦИЯ ИИ-ЧАТА С РЕЗЕРВОМ ---
 def get_ai_chat_response(user_text):
+    # Попытка 1: Pollinations
     try:
         url = "https://text.pollinations.ai/" + urllib.parse.quote(user_text)
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200: return response.text.strip()
+        response = requests.get(url, timeout=20)
+        if response.status_code == 200 and len(response.text.strip()) > 5:
+            return response.text.strip()
     except: pass
+
+    # Попытка 2: Резервный сервис (FreeLlama через API-заглушку)
+    try:
+        # Используем публичный эндпоинт для Llama 3 (часто работает, когда Pollinations лежит)
+        url = "https://api.airforce/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "model": "llama-3.1-70b-chat",
+            "messages": [{"role": "user", "content": user_text}],
+            "max_tokens": 500
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            if "choices" in data and len(data["choices"]) > 0:
+                return data["choices"][0]["message"]["content"].strip()
+    except: pass
+
     return "❌ ИИ временно недоступен. Попробуй позже."
 
 @app.route('/')
@@ -206,7 +227,6 @@ def handle_text(message: Message):
     user_text = message.text.strip()
     if len(user_text) < 2: return
     
-    # Если есть запросы к чату — отвечаем как ИИ-чат
     if data.get("chat_requests", 0) > 0:
         bot.send_chat_action(message.chat.id, 'typing')
         answer = get_ai_chat_response(user_text)
@@ -215,7 +235,6 @@ def handle_text(message: Message):
         bot.reply_to(message, f"{answer}\n\n(Осталось запросов: {data['chat_requests']})")
         return
     
-    # Если нет запросов к чату, но есть кредиты — генерируем картинку
     if not is_subscription_active(user_id) and data["credits"] <= 0:
         return bot.reply_to(message, "У тебя нет кредитов. Купи: /buy")
     msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
@@ -440,7 +459,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
     bot.edit_message_text("⏳ Рисую... (Пробую Cloudflare)", chat_id, message_id)
     image_bytes = None
     
-    # 1. CLOUDFLARE
     try:
         cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
         cf_headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
@@ -451,7 +469,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
                 image_bytes = base64.b64decode(result["result"]["image"])
     except Exception as e: print(f"CF Error: {e}")
 
-    # 2. TOGETHER
     if image_bytes is None:
         bot.edit_message_text("⏳ Cloudflare занят. Пробую Together...", chat_id, message_id)
         try:
@@ -466,7 +483,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
                         if img_resp.status_code == 200: image_bytes = img_resp.content
         except Exception as e: print(f"Together Error: {e}")
 
-    # 3. POLLINATIONS
     if image_bytes is None:
         bot.edit_message_text("⏳ Together занят. Пробую Pollinations...", chat_id, message_id)
         try:
@@ -476,7 +492,6 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
                 image_bytes = img_resp.content
         except Exception as e: print(f"Pollinations Error: {e}")
 
-    # ОТПРАВКА
     if image_bytes:
         bot.send_photo(chat_id=chat_id, photo=image_bytes, caption="✅ Готово!")
         data["total_generated"] = data.get("total_generated", 0) + 1
@@ -507,4 +522,3 @@ if __name__ == '__main__':
     threading.Thread(target=run_bot).start()
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
-    
