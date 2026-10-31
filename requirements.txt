@@ -1,5 +1,4 @@
 pyTelegramBotAPI
 Flask
 requests
-neonpay
 aiofiles
