@@ -32,6 +32,8 @@ SETTINGS_FILE = "settings.json"
 user_data = {}
 promo_codes = {}
 settings = {"welcome_text": "Привет! Отправь фото или нажми '🎨 Генерация фото'.", "price_20": 100, "price_sub": 150, "free_tries": 1}
+last_prompt = {}
+admin_logs = []
 
 def load_db():
     global user_data, promo_codes, settings
@@ -54,6 +56,10 @@ def save_db():
     except Exception as e: print(f"Ошибка БД: {e}")
 
 load_db()
+
+def log_admin(action, admin_id):
+    admin_logs.append(f"{datetime.datetime.now().strftime('%H:%M')} - {action}")
+    if len(admin_logs) > 30: admin_logs.pop(0)
 
 def get_user_data(user_id, username=None):
     user_id_str = str(user_id)
@@ -95,6 +101,7 @@ def get_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("👤 Профиль"), KeyboardButton("💳 Купить"))
     markup.add(KeyboardButton("🎨 Генерация фото"), KeyboardButton("🆘 Помощь"))
+    markup.add(KeyboardButton("🎁 Промокод"))
     return markup
 
 # --- ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ---
@@ -125,6 +132,25 @@ def buy_menu(message: Message):
 @bot.message_handler(func=lambda message: message.text == "🆘 Помощь")
 def help_menu(message: Message):
     bot.reply_to(message, "Отправь фото и выбери стиль. Или нажми '🎨 Генерация фото'.")
+
+@bot.message_handler(func=lambda message: message.text == "🎁 Промокод")
+def promo_button(message: Message):
+    msg = bot.reply_to(message, "Введи промокод:", reply_markup=ForceReply())
+    bot.register_next_step_handler(msg, process_user_promo)
+
+def process_user_promo(message: Message):
+    try:
+        code = message.text.strip().upper()
+        if code in promo_codes:
+            amount = promo_codes.pop(code)
+            save_db()
+            data = get_user_data(message.from_user.id)
+            data["credits"] += amount
+            save_db()
+            bot.reply_to(message, f"✅ +{amount} кредитов.")
+        else:
+            bot.reply_to(message, "❌ Неверный код.")
+    except: pass
 
 @bot.message_handler(func=lambda message: message.text == "🎨 Генерация фото")
 def start_generation(message: Message):
@@ -185,6 +211,9 @@ def admin_menu(message: Message):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("👥 Пользователи", callback_data="adm_users_0"))
     markup.add(InlineKeyboardButton("📊 Статистика", callback_data="adm_stats"))
+    markup.add(InlineKeyboardButton("🎟 Промокоды", callback_data="adm_promos"))
+    markup.add(InlineKeyboardButton("📢 Рассылка", callback_data="adm_broadcast"))
+    markup.add(InlineKeyboardButton("📝 Логи", callback_data="adm_logs"))
     bot.reply_to(message, "🛠 Админ-панель:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('adm_'))
@@ -195,9 +224,47 @@ def handle_admin_buttons(call: CallbackQuery):
         total = len(user_data)
         total_gen = sum(d.get("total_generated", 0) for d in user_data.values())
         bot.send_message(call.message.chat.id, f"📊 Всего: {total}\nКартинок: {total_gen}")
+    elif call.data == "adm_broadcast":
+        msg = bot.send_message(call.message.chat.id, "Текст для рассылки:", reply_markup=ForceReply())
+        bot.register_next_step_handler(msg, process_broadcast)
+    elif call.data == "adm_promos":
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("➕ Создать", callback_data="promo_create"))
+        markup.add(InlineKeyboardButton("📜 Список", callback_data="promo_list"))
+        bot.send_message(call.message.chat.id, "🎟 Промокоды:", reply_markup=markup)
+    elif call.data == "adm_logs":
+        text = "📝 Логи:\n" + "\n".join(admin_logs[-10:]) if admin_logs else "Логов нет."
+        bot.send_message(call.message.chat.id, text)
     elif call.data.startswith("adm_users_"):
         page = int(call.data.split("_")[2])
         show_users_page(call.message.chat.id, call.message.message_id, page)
+
+def process_broadcast(message):
+    count = 0
+    for uid in user_data.keys():
+        try:
+            bot.send_message(uid, f"📢 Сообщение:\n\n{message.text}")
+            count += 1; time.sleep(0.05)
+        except: pass
+    bot.reply_to(message, f"✅ Отправлено {count} юзерам.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "promo_create")
+def promo_create_prompt(call: CallbackQuery):
+    msg = bot.send_message(call.message.chat.id, "Введи: КОД СУММА", reply_markup=ForceReply())
+    bot.register_next_step_handler(msg, process_promo_creation)
+
+def process_promo_creation(message):
+    try:
+        parts = message.text.split()
+        promo_codes[parts[0].upper()] = int(parts[1])
+        save_db()
+        bot.reply_to(message, "✅ Промокод создан.")
+    except: bot.reply_to(message, "Ошибка. Введи: КОД СУММА")
+
+@bot.callback_query_handler(func=lambda call: call.data == "promo_list")
+def promo_list(call: CallbackQuery):
+    text = "🎟 Коды:\n" + "\n".join([f"`{k}` — {v}" for k, v in promo_codes.items()]) if promo_codes else "Нет кодов."
+    bot.send_message(call.message.chat.id, text, parse_mode='Markdown')
 
 def show_users_page(chat_id, message_id, page=0):
     users_list = list(user_data.items())
@@ -228,6 +295,9 @@ def back_to_adm_main(call: CallbackQuery):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("👥 Пользователи", callback_data="adm_users_0"))
     markup.add(InlineKeyboardButton("📊 Статистика", callback_data="adm_stats"))
+    markup.add(InlineKeyboardButton("🎟 Промокоды", callback_data="adm_promos"))
+    markup.add(InlineKeyboardButton("📢 Рассылка", callback_data="adm_broadcast"))
+    markup.add(InlineKeyboardButton("📝 Логи", callback_data="adm_logs"))
     bot.edit_message_text("🛠 Админ-панель:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('user_manage_'))
@@ -254,7 +324,7 @@ def action_user(call: CallbackQuery):
     save_db()
     manage_user(call)
 
-# --- ГЕНЕРАЦИЯ (КАСКАД) ---
+# --- ГЕНЕРАЦИЯ (5 ИИ) ---
 def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=False):
     bot.edit_message_text("⏳ Рисую... (Пробую Cloudflare)", chat_id, message_id)
     image_bytes = None
@@ -294,6 +364,47 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
             if img_resp.status_code == 200 and img_resp.headers.get('content-type', '').startswith('image'):
                 image_bytes = img_resp.content
         except Exception as e: print(f"Pollinations Error: {e}")
+
+    # 4. VEIDA
+    if image_bytes is None:
+        bot.edit_message_text("⏳ Pollinations занят. Пробую Veida...", chat_id, message_id)
+        try:
+            anon_id = f"skill-{uuid.uuid4().hex[:10]}"
+            v_resp = requests.post("https://veida.ai/api/ai/generate", headers={"content-type": "application/json", "x-anon-id": anon_id},
+                json={"provider": "replicate", "mediaType": "image", "model": "veida-image-v1", "scene": "text-to-image", "prompt": prompt, "options": {"aspect_ratio": "1:1"}}, timeout=30)
+            if v_resp.status_code == 200:
+                v_data = v_resp.json()
+                if v_data.get("code") == 0 and "data" in v_data and "id" in v_data["data"]:
+                    task_id = v_data["data"]["id"]
+                    for _ in range(10):
+                        time.sleep(8)
+                        poll_resp = requests.get(f"https://veida.ai/api/ai/anon-query?taskId={task_id}&provider=replicate&mediaType=image", timeout=15)
+                        if poll_resp.status_code == 200:
+                            poll_data = poll_resp.json()
+                            if poll_data.get("code") == 0 and "data" in poll_data:
+                                status = poll_data["data"].get("status")
+                                if status == "success":
+                                    img_url = poll_data["data"].get("images", [None])[0]
+                                    if img_url:
+                                        img_resp = requests.get(img_url, timeout=30)
+                                        if img_resp.status_code == 200: image_bytes = img_resp.content
+                                    break
+                                elif status == "failed": break
+        except Exception as e: print(f"Veida Error: {e}")
+
+    # 5. SUBNP
+    if image_bytes is None:
+        bot.edit_message_text("⏳ Veida занят. Пробую SubNP...", chat_id, message_id)
+        try:
+            sub_resp = requests.post("https://t2i.mcpcore.xyz/generate", json={"prompt": prompt, "model": "magic"}, timeout=60)
+            if sub_resp.status_code == 200:
+                sub_data = sub_resp.json()
+                if "url" in sub_data:
+                    img_resp = requests.get(sub_data["url"], timeout=30)
+                    if img_resp.status_code == 200: image_bytes = img_resp.content
+                elif "image" in sub_data:
+                    image_bytes = base64.b64decode(sub_data["image"])
+        except Exception as e: print(f"SubNP Error: {e}")
 
     # ОТПРАВКА
     if image_bytes:
