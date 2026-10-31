@@ -282,7 +282,8 @@ def admin_menu(message: Message):
     markup.add(InlineKeyboardButton("📝 Логи", callback_data="adm_logs"))
     markup.add(InlineKeyboardButton("🚫 Баны", callback_data="adm_bans"))
     bot.reply_to(message, "🛠 Админ-панель:", reply_markup=markup)
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('adm_'))
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('adm_'))
 def handle_admin_buttons(call: CallbackQuery):
     if not is_admin(call.from_user.id, call.from_user.username): return
     bot.answer_callback_query(call.id)
@@ -560,16 +561,4 @@ def handle_retry(call: CallbackQuery):
     if call.from_user.id != user_id:
         return bot.answer_callback_query(call.id, "Это не твоя кнопка.")
     prompt = last_prompt.get(user_id)
-    if not prompt: return bot.answer_callback_query(call.id, "Нет сохраненного запроса.")
-    data = get_user_data(user_id)
-    if not is_subscription_active(user_id) and data["credits"] <= 0:
-        return bot.answer_callback_query(call.id, "Генерации закончились. Купи: /buy")
-    bot.answer_callback_query(call.id)
-    bot.edit_message_text("⏳ Повторная попытка...", call.message.chat.id, call.message.message_id)
-    process_generation(call.message.chat.id, user_id, data, prompt, call.message.message_id)
-
-# --- ЗАПУСК ---
-if __name__ == '__main__':
-    threading.Thread(target=run_bot).start()
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    if not prompt: return bot.answer_callback
