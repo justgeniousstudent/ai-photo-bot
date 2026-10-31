@@ -135,7 +135,7 @@ def get_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("👤 Профиль"), KeyboardButton("💳 Купить"))
     markup.add(KeyboardButton("🎨 Генерация фото"), KeyboardButton("💬 ИИ-Чат"))
-    markup.add(KeyboardButton("🎁 Промокод"), KeyboardButton("🧀 Бонус-Ловушка"))
+    markup.add(KeyboardButton("🎁 Промокод"), KeyboardButton("🧀 Бонус 100 запросов"))
     markup.add(KeyboardButton("🆘 Помощь"))
     return markup
 
