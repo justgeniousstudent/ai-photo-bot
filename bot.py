@@ -13,7 +13,7 @@ from telebot.types import (
 )
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9060154141:AAF_Wa3bzK5EVFJxkT3LA_OU2cxsm5uu_YY"
+BOT_TOKEN = "9060154141:AAESRS4f1L2anR8Zj504SjvIP-pkTa2gFRY"
 ADMIN_ID = 8068216414
 ADMIN_USERNAME = "sladkooe_vino"
 
