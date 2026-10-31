@@ -1,6 +1,5 @@
 import os
 import threading
-import time
 import datetime
 from flask import Flask
 import telebot
@@ -16,12 +15,16 @@ user_data = {}
 
 def get_user_data(user_id):
     """Безопасно возвращает данные пользователя. Создает, если их нет."""
+    if user_id is None:
+        return {"credits": 0, "subscription_end": None}
     if user_id not in user_data:
         user_data[user_id] = {"credits": 1, "subscription_end": None}
     return user_data[user_id]
 
 def is_subscription_active(user_id):
     """Проверяет, активна ли подписка."""
+    if user_id is None:
+        return False
     data = user_data.get(user_id, {})
     sub_end = data.get("subscription_end")
     if sub_end and sub_end > datetime.datetime.now():
@@ -113,21 +116,20 @@ def handle_photo(message: Message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
 def handle_style(call):
     user_id = call.from_user.id
-    # Принудительно создаем/получаем данные
-    if user_id not in user_data:
-        user_data[user_id] = {"credits": 1, "subscription_end": None}
+    data = get_user_data(user_id)
     
-    data = user_data[user_id]
-    
-    # Проверка на всякий случай
-    if data.get("credits", 0) <= 0 and not is_subscription_active(user_id):
+    if data is None:
+        bot.answer_callback_query(call.id, "Ошибка данных. Попробуй /start")
+        return
+
+    if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
         bot.answer_callback_query(call.id, "Нет генераций! Купи пакет: /buy")
         return
 
     bot.answer_callback_query(call.id)
     bot.edit_message_text("⏳ Нейросеть колдует над твоим фото...", call.message.chat.id, call.message.message_id)
 
-    time.sleep(3) 
+    # Заглушка (вместо реальной нейросети)
     bot.send_photo(
         chat_id=call.message.chat.id,
         photo=call.message.photo[-1].file_id, 
@@ -139,3 +141,9 @@ def handle_style(call):
         bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
     else:
         bot.send_message(user_id, "У тебя активен безлимит по подписке ♾️")
+
+# --- ЗАПУСК ---
+if __name__ == '__main__':
+    threading.Thread(target=run_bot).start()
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
