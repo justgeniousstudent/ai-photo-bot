@@ -17,7 +17,7 @@ from telebot.types import (
 )
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9060154141:AAG8cxlh63N1dWZW2KnOKXRfAEoB9zNX8ws"
+BOT_TOKEN = "9060154141:AAGrMlc_J7nAi6A-7ptLWq-Rstr0u1oTtrY"
 ADMIN_ID = 8068216414
 ADMIN_USERNAME = "sladkooe_vino"
 
@@ -567,3 +567,10 @@ def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=Fal
         if not is_subscription_active(user_id):
             data["credits"] -= 1; save_db()
             bot.send_message(user_id, f"Осталось: {data['credits']}", reply_markup=get_main_keyboard())
+        else:
+            save_db()
+            bot.send_message(user_id, "Безлимит ♾️", reply_markup=get_main_keyboard())
+    else:
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔄 Попробовать снова", callback_data=f"retry_{user_id}"))
+        bot.edit_message_text("❌ Все пять серверов заняты. Попробуй позже.", chat
