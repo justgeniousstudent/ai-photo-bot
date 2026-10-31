@@ -10,12 +10,13 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, L
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "9060154141:AAF_Wa3bzK5EVFJxkT3LA_OU2cxsm5uu_YY"
-ADMIN_ID = 8068216414  # Ваш ID
+ADMIN_ID = 8068216414          # Ваш ID
+ADMIN_USERNAME = "sladkooe_vino" # Ваш юзернейм (без @)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# --- БАЗА ДАННЫХ В ФАЙЛЕ ---
+# --- БАЗА ДАННЫХ ---
 DB_FILE = "users.json"
 user_data = {}
 photo_storage = {}
@@ -23,14 +24,22 @@ photo_storage = {}
 def load_db():
     global user_data
     if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f:
-            user_data = json.load(f)
+        try:
+            with open(DB_FILE, "r") as f:
+                user_data = json.load(f)
+            if not isinstance(user_data, dict):
+                user_data = {}
+        except:
+            user_data = {}
     else:
         user_data = {}
 
 def save_db():
-    with open(DB_FILE, "w") as f:
-        json.dump(user_data, f)
+    try:
+        with open(DB_FILE, "w") as f:
+            json.dump(user_data, f)
+    except Exception as e:
+        print(f"Ошибка сохранения БД: {e}")
 
 load_db()
 
@@ -40,7 +49,6 @@ def get_user_data(user_id, username=None):
         user_data[user_id_str] = {"credits": 1, "subscription_end": None, "username": username}
         save_db()
     elif username and user_data[user_id_str].get("username") != username:
-        # Обновляем юзернейм, если он изменился
         user_data[user_id_str]["username"] = username
         save_db()
     return user_data[user_id_str]
@@ -52,8 +60,13 @@ def is_subscription_active(user_id):
         return True
     return False
 
-def is_admin(user_id):
-    return user_id == ADMIN_ID
+# Проверка на админа: по ID или по юзернейму
+def is_admin(user_id, username=None):
+    if user_id == ADMIN_ID:
+        return True
+    if username and username.lower() == ADMIN_USERNAME.lower():
+        return True
+    return False
 
 @app.route('/')
 def health():
@@ -63,15 +76,19 @@ def run_bot():
     print("Бот запущен...")
     bot.infinity_polling()
 
-# --- ПОЛЬЗОВАТЕЛЬСКИЕ КОМАНДЫ ---
+# --- КОМАНДЫ ---
 @bot.message_handler(commands=['start'])
 def start(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username
-    data = get_user_data(user_id, username)
     
-    if is_admin(user_id):
+    # Принудительно создаем запись при старте
+    data = get_user_data(user_id, username)
+    save_db()
+    
+    if is_admin(user_id, username):
         bot.reply_to(message, "👑 Привет, Админ! Тебе доступны команды:\n/stats - статистика\n/give <ID или @username> <кол-во> - выдать кредиты")
+        return # Админу не показываем сообщение о бесплатной попытке
     
     if data["credits"] == 1 and not is_subscription_active(user_id):
         bot.reply_to(message, "Привет! Отправь мне фото, и я сделаю из него конфетку. У тебя есть 1 бесплатная попытка!")
@@ -88,7 +105,7 @@ def buy(message: Message):
 # --- АДМИНСКИЕ КОМАНДЫ ---
 @bot.message_handler(commands=['stats'])
 def stats(message: Message):
-    if not is_admin(message.from_user.id):
+    if not is_admin(message.from_user.id, message.from_user.username):
         return
     total_users = len(user_data)
     total_credits = sum(d.get("credits", 0) for d in user_data.values())
@@ -96,7 +113,7 @@ def stats(message: Message):
 
 @bot.message_handler(commands=['give'])
 def give_credits(message: Message):
-    if not is_admin(message.from_user.id):
+    if not is_admin(message.from_user.id, message.from_user.username):
         return
     try:
         parts = message.text.split()
@@ -109,14 +126,13 @@ def give_credits(message: Message):
         
         target_id = None
         
-        # Проверяем, ввели ли ID (цифры) или @username
         if target.isdigit():
             target_id = target
         elif target.startswith('@'):
-            username = target[1:] # Убираем @
-            # Ищем пользователя по юзернейму в базе
+            username = target[1:].lower()
+            # Ищем пользователя по юзернейму в базе (без учета регистра)
             for uid, udata in user_data.items():
-                if udata.get("username") == username:
+                if udata.get("username") and udata.get("username").lower() == username:
                     target_id = uid
                     break
             if not target_id:
@@ -136,7 +152,7 @@ def give_credits(message: Message):
         try:
             bot.send_message(target_id, f"🎁 Тебе начислено {amount} генераций от администратора!")
         except:
-            pass # Если пользователь заблокировал бота, сообщение не дойдет
+            pass
     except Exception as e:
         bot.reply_to(message, f"Ошибка: {e}")
 
@@ -185,7 +201,7 @@ def handle_photo(message: Message):
     markup.add(InlineKeyboardButton("🎨 Стиль Аниме", callback_data="style_anime"))
     bot.reply_to(message, "Выбери стиль обработки:", reply_markup=markup)
 
-# --- ОБРАБОТКА КНОПОК (ГЕНЕРАЦИЯ) ---
+# --- ОБРАБОТКА КНОПОК ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
 def handle_style(call):
     user_id = call.from_user.id
@@ -235,4 +251,3 @@ if __name__ == '__main__':
     threading.Thread(target=run_bot).start()
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
-    
