@@ -102,7 +102,7 @@ def got_payment(message: Message):
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message: Message):
     user_id = message.from_user.id
-    get_user_data(user_id)
+    get_user_data(user_id) 
     
     if not is_subscription_active(user_id) and user_data[user_id]["credits"] <= 0:
         bot.reply_to(message, "У тебя закончились генерации или подписка. Купи пакет: /buy")
@@ -113,34 +113,48 @@ def handle_photo(message: Message):
     markup.add(InlineKeyboardButton("🎨 Стиль Аниме", callback_data="style_anime"))
     bot.reply_to(message, "Выбери стиль обработки:", reply_markup=markup)
 
+# --- ОБРАБОТКА КНОПОК СТИЛЯ (ЗАЩИЩЕНО ОТ ОШИБОК) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
 def handle_style(call):
-    user_id = call.from_user.id
-    data = get_user_data(user_id)
-    
-    if data is None:
-        bot.answer_callback_query(call.id, "Ошибка данных. Попробуй /start")
-        return
+    try:
+        user_id = call.from_user.id
+        
+        # Принудительно создаем данные, если их вдруг нет
+        if user_id not in user_data:
+            user_data[user_id] = {"credits": 1, "subscription_end": None}
+        
+        data = user_data[user_id]
+        
+        if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
+            bot.answer_callback_query(call.id, "Нет генераций! Купи пакет: /buy")
+            return
 
-    if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
-        bot.answer_callback_query(call.id, "Нет генераций! Купи пакет: /buy")
-        return
+        bot.answer_callback_query(call.id)
+        
+        # Проверяем, есть ли у нас фото для обработки
+        if not call.message.photo:
+            bot.send_message(call.message.chat.id, "Ошибка: фото не найдено. Отправь фото заново.")
+            return
 
-    bot.answer_callback_query(call.id)
-    bot.edit_message_text("⏳ Нейросеть колдует над твоим фото...", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("⏳ Нейросеть колдует над твоим фото...", call.message.chat.id, call.message.message_id)
 
-    # Заглушка (вместо реальной нейросети)
-    bot.send_photo(
-        chat_id=call.message.chat.id,
-        photo=call.message.photo[-1].file_id, 
-        caption=f"✅ Готово! (Стиль: {call.data})"
-    )
-    
-    if not is_subscription_active(user_id):
-        data["credits"] -= 1
-        bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
-    else:
-        bot.send_message(user_id, "У тебя активен безлимит по подписке ♾️")
+        # Заглушка (отправляем то же фото)
+        bot.send_photo(
+            chat_id=call.message.chat.id,
+            photo=call.message.photo[-1].file_id, 
+            caption=f"✅ Готово! (Стиль: {call.data})"
+        )
+        
+        if not is_subscription_active(user_id):
+            data["credits"] -= 1
+            bot.send_message(user_id, f"Осталось генераций: {data['credits']}")
+        else:
+            bot.send_message(user_id, "У тебя активен безлимит по подписке ♾️")
+
+    except Exception as e:
+        # Если что-то пошло не так, бот не упадет, а напишет ошибку
+        print(f"Ошибка в handle_style: {e}")
+        bot.send_message(call.message.chat.id, "Произошла ошибка. Попробуй отправить фото заново.")
 
 # --- ЗАПУСК ---
 if __name__ == '__main__':
