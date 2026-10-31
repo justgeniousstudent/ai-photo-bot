@@ -25,6 +25,7 @@ DB_FILE = "users.json"
 user_data = {}
 photo_storage = {}
 waiting_for_prompt = {}
+waiting_for_generation_text = {} # Ожидание текста для генерации с нуля
 
 def load_db():
     global user_data
@@ -98,7 +99,7 @@ def run_bot():
 def get_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("👤 Профиль"), KeyboardButton("💳 Купить"))
-    markup.add(KeyboardButton("🆘 Помощь"))
+    markup.add(KeyboardButton("🎨 Генерация фото"), KeyboardButton("🆘 Помощь"))
     return markup
 
 # --- КОМАНДЫ ---
@@ -128,9 +129,9 @@ def start(message: Message):
     
     data = get_user_data(user_id)
     if data["credits"] == 1 and not is_subscription_active(user_id):
-        bot.reply_to(message, "Привет! Отправь мне фото, и я сделаю из него конфетку. У тебя есть 1 бесплатная попытка!", reply_markup=get_main_keyboard())
+        bot.reply_to(message, "Привет! Отправь мне фото для обработки или нажми '🎨 Генерация фото', чтобы нарисовать картинку с нуля. У тебя есть 1 бесплатная попытка!", reply_markup=get_main_keyboard())
     else:
-        bot.reply_to(message, "Привет! Отправь мне фото для обработки.", reply_markup=get_main_keyboard())
+        bot.reply_to(message, "Привет! Отправь мне фото для обработки или нажми '🎨 Генерация фото'.", reply_markup=get_main_keyboard())
 
 # --- ОБРАБОТКА КНОПОК КЛАВИАТУРЫ ---
 @bot.message_handler(func=lambda message: message.text == "👤 Профиль")
@@ -152,7 +153,37 @@ def buy_menu(message: Message):
 @bot.message_handler(func=lambda message: message.text == "🆘 Помощь")
 def help_menu(message: Message):
     if is_banned(message.from_user.id): return
-    bot.reply_to(message, "Отправь мне фото, выбери стиль, и я сгенерирую новое изображение. Оплатить генерации можно через кнопку 'Купить'.")
+    bot.reply_to(message, "Отправь фото и выбери стиль для обработки. Или нажми '🎨 Генерация фото', чтобы нарисовать картинку по описанию. Оплатить генерации можно через 'Купить'.")
+
+# --- ГЕНЕРАЦИЯ ФОТО (НОВАЯ КНОПКА) ---
+@bot.message_handler(func=lambda message: message.text == "🎨 Генерация фото")
+def start_generation(message: Message):
+    user_id = message.from_user.id
+    if is_banned(user_id): return
+    data = get_user_data(user_id)
+    
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+        
+    waiting_for_generation_text[user_id] = True
+    bot.reply_to(message, "Напиши, что ты хочешь нарисовать (например: 'кот в космосе в стиле киберпанк'):", reply_markup=ForceReply())
+
+# Обработка текста для генерации
+@bot.message_handler(func=lambda message: message.from_user.id in waiting_for_generation_text)
+def handle_generation_text(message: Message):
+    user_id = message.from_user.id
+    data = get_user_data(user_id)
+    user_text = message.text
+    waiting_for_generation_text.pop(user_id, None)
+    
+    if not is_subscription_active(user_id) and data["credits"] <= 0:
+        return bot.reply_to(message, "Генерации закончились. Купи: /buy")
+
+    msg = bot.reply_to(message, "🧠 ИИ придумывает промпт...")
+    smart_prompt = get_smart_prompt(user_text)
+    
+    # Генерируем без фото
+    process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id)
 
 @bot.message_handler(commands=['buy'])
 def buy(message: Message):
@@ -162,7 +193,7 @@ def buy(message: Message):
     markup.add(InlineKeyboardButton("♾️ Безлимит на месяц (150 ⭐)", callback_data="buy_sub"))
     bot.reply_to(message, "Выбери подходящий тариф:", reply_markup=markup)
 
-# --- АДМИНКА (ПРИКОЛЮХИ) ---
+# --- АДМИНКА ---
 @bot.message_handler(commands=['stats'])
 def stats(message: Message):
     if not is_admin(message.from_user.id, message.from_user.username): return
@@ -238,11 +269,10 @@ def broadcast(message: Message):
         try:
             bot.send_message(uid, f"📢 Сообщение от админа:\n\n{text}")
             count += 1
-            time.sleep(0.05) # Пауза, чтобы не получить бан от Telegram
+            time.sleep(0.05)
         except: pass
     bot.reply_to(message, f"✅ Рассылка отправлена {count} пользователям.")
 
-# Вспомогательная функция поиска ID
 def find_user_id(target):
     if target.isdigit(): return target
     elif target.startswith('@'):
@@ -276,7 +306,7 @@ def got_payment(message: Message):
         data["subscription_end"] = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat(); save_db()
         bot.send_message(user_id, "✅ Безлимит на 30 дней!")
 
-# --- ОБРАБОТКА ФОТО ---
+# --- ОБРАБОТКА ФОТО (СТАРЫЙ ФУНКЦИОНАЛ) ---
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message: Message):
     user_id = message.from_user.id
@@ -295,16 +325,14 @@ def handle_photo(message: Message):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("✨ Улучшить качество", callback_data="style_enhance"))
     markup.add(InlineKeyboardButton("🎨 Стиль Аниме", callback_data="style_anime"))
-    markup.add(InlineKeyboardButton("✍️ Свой запрос (ИИ)", callback_data="style_custom"))
+    markup.add(InlineKeyboardButton("✍️ Свой запрос", callback_data="style_custom"))
     bot.reply_to(message, "Выбери стиль или напиши свой запрос:", reply_markup=markup)
 
 # --- ОБРАБОТКА КНОПОК СТИЛЯ ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('style_'))
 def handle_style(call):
     user_id = call.from_user.id
-    
     if is_banned(user_id): return
-    
     data = get_user_data(user_id)
     
     if not is_subscription_active(user_id) and data.get("credits", 0) <= 0:
@@ -321,7 +349,7 @@ def handle_style(call):
 
     process_generation(call.message.chat.id, user_id, data, call.data, call.message.message_id)
 
-# --- ОБРАБОТКА ТЕКСТОВОГО ЗАПРОСА ---
+# --- ОБРАБОТКА ТЕКСТОВОГО ЗАПРОСА ДЛЯ ФОТО ---
 @bot.message_handler(func=lambda message: message.from_user.id in waiting_for_prompt)
 def handle_custom_text(message: Message):
     user_id = message.from_user.id
@@ -339,7 +367,7 @@ def handle_custom_text(message: Message):
     smart_prompt = get_smart_prompt(user_text)
     process_generation(message.chat.id, user_id, data, smart_prompt, msg.message_id, is_custom=True)
 
-# --- ФУНКЦИЯ ГЕНЕРАЦИИ (С 3 ПОПЫТКАМИ) ---
+# --- ФУНКЦИЯ ГЕНЕРАЦИИ ---
 def process_generation(chat_id, user_id, data, prompt, message_id, is_custom=False):
     encoded_prompt = urllib.parse.quote(prompt)
     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512&nologo=true"
